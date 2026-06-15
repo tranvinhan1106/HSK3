@@ -371,30 +371,30 @@ export default function App() {
     { id: 3, title: 'Cao thủ Hán tự', condition: 'Thuộc 100 từ mới', rewardItem: 'Xem phim rạp 🎬', target: 100, current: stats.totalMastered, icon: Star, color: 'text-rose-500 dark:text-white', bgColor: 'bg-rose-100 dark:bg-white/10' },
   ];
 
-  // --- HÀM PHÁT ÂM THANH (KHÔI PHỤC ĐỘ TRỄ 50MS CHỐNG NUỐT ÂM) ---
+  // --- ĐẠI PHẪU: HÀM PHÁT ÂM THANH MỚI (CHỐNG LỖI IOS/VERCEL) ---
   const playAudio = (text) => {
     if (!window.speechSynthesis) return;
 
-    // Hủy các luồng âm thanh đang bị kẹt
-    window.speechSynthesis.cancel();
+    window.speechSynthesis.cancel(); // Xóa luồng kẹt
+    
+    // KHÔNG dùng setTimeout để tránh bị Safari/Trình duyệt di động chặn Autoplay
+    // Trình duyệt đòi hỏi hàm này phải được gọi "ĐỒNG BỘ" với sự kiện nhấp chuột
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'zh-CN'; 
+    utterance.rate = 0.85; 
 
-    // Dùng lại setTimeout 50ms theo yêu cầu của Na. 
-    // 50ms là đủ nhanh để không bị Safari block (dưới 1000ms), 
-    // và đủ trễ để engine TTS dọn dẹp sạch sẽ, không bị nuốt âm tiết đầu tiên!
-    setTimeout(() => {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'zh-CN'; 
-      utterance.rate = 0.85; 
+    const voices = window.speechSynthesis.getVoices();
+    const zhVoice = voices.find(voice => voice.lang === 'zh-CN' || voice.lang.includes('zh'));
+    if (zhVoice) {
+      utterance.voice = zhVoice;
+    }
 
-      // Tìm và ép sử dụng đúng giọng tiếng Trung trên máy
-      const voices = window.speechSynthesis.getVoices();
-      const zhVoice = voices.find(voice => voice.lang === 'zh-CN' || voice.lang.includes('zh'));
-      if (zhVoice) {
-        utterance.voice = zhVoice;
-      }
-
-      window.speechSynthesis.speak(utterance);
-    }, 50); 
+    window.speechSynthesis.speak(utterance);
+    
+    // Thủ thuật chống "ngủ quên" của SpeechSynthesis trên iOS
+    if (window.speechSynthesis.resume) {
+      window.speechSynthesis.resume();
+    }
   };
 
   // Hack để tải Voices ngay khi load trang
@@ -421,11 +421,10 @@ export default function App() {
     return options.sort(() => Math.random() - 0.5);
   };
 
+  // ĐIỂM SỬA QUAN TRỌNG: GỠ BỎ TỰ ĐỘNG PHÁT ÂM TRONG USE_EFFECT ĐỂ CHIỀU LÒNG ĐIỆN THOẠI
   useEffect(() => {
     if (currentScreen === 'flashcard' && !isFlipped && flashcards.length > 0) {
-      if (learningMode === 'listening' || learningMode === 'standard') {
-        playAudio(flashcards[currentCardIndex].word);
-      }
+      // Đã gỡ lệnh playAudio ở đây. Nó chỉ dùng để set focus và generate Quiz
       if ((learningMode === 'typing' || learningMode === 'listening') && inputRef.current && !showKeyboard) {
         inputRef.current.focus();
       }
@@ -440,8 +439,10 @@ export default function App() {
     setAlphabetGroups(prev => prev.map(g => ({ ...g, active: g.id === groupId })));
   };
 
-  const resetSession = () => {
-    setFlashcards(prev => [...prev].sort(() => Math.random() - 0.5)); 
+  // HÀM KHỞI TẠO PHIÊN HỌC CHUẨN
+  const startSession = () => {
+    const sortedCards = [...flashcards].sort(() => Math.random() - 0.5); 
+    setFlashcards(sortedCards);
     setCurrentScreen('flashcard');
     setCurrentCardIndex(0);
     setIsFlipped(false);
@@ -452,16 +453,28 @@ export default function App() {
     setHasTypingMistake(false);
     setSessionProgressUpdates([]); 
     setSelectedQuizOption(null);
+
+    // BƯỚC KHAI THÔNG ÂM THANH CHO MOBILE: 
+    // Đọc một chuỗi rỗng NGAY LẬP TỨC khi Na bấm nút "Bắt đầu" để mở khóa AudioContext
+    if (window.speechSynthesis) {
+       const unlockUtterance = new SpeechSynthesisUtterance('');
+       window.speechSynthesis.speak(unlockUtterance);
+    }
+
+    // Sau khi khai thông, đọc ngay từ đầu tiên (Nếu học Tiêu chuẩn hoặc Nghe)
+    if (learningMode === 'standard' || learningMode === 'listening') {
+       playAudio(sortedCards[0].word);
+    }
   };
 
   const handleStartLearning = () => {
     if (flashcards.length === 0 || stats.reviewsToday > 100) return; 
-    resetSession();
+    startSession();
   };
 
   const handleStartReview = () => {
     if (stats.reviewsToday === 0) return;
-    resetSession();
+    startSession();
   };
 
   const handleEval = (gradeCode) => {
@@ -518,6 +531,11 @@ export default function App() {
       setHasTypingMistake(false);
       setSelectedQuizOption(null);
       setShowKeyboard(false); 
+
+      // Phát âm từ tiếp theo NẾU đang học Tiêu chuẩn (vì thao tác này được trigger bằng click tay)
+      if (learningMode === 'standard') {
+         playAudio(flashcards[currentCardIndex + 1].word);
+      }
     } else {
       setStats(prev => {
         const updatedStats = { 
@@ -692,7 +710,7 @@ export default function App() {
                         <input 
                           ref={inputRef}
                           type="text" 
-                          placeholder={hasTypingMistake ? `Gợi ý: ${card.pronunciation}` : "Nhập Pinyin (được gõ không dấu)"}
+                          placeholder={hasTypingMistake ? `Gợi ý Pinyin: ${card.pronunciation}` : "Nhập Pinyin (được gõ không dấu)"}
                           className={`w-full bg-white/50 dark:bg-black/20 border-2 focus:outline-none transition-colors text-center text-base sm:text-lg md:text-xl font-medium rounded-xl px-3 py-3 sm:px-4 sm:py-4 text-slate-700 dark:text-white ${hasTypingMistake ? 'border-rose-400 dark:border-rose-500 placeholder-rose-400/70 dark:placeholder-rose-300/70 shake-animation bg-rose-50/50 dark:bg-rose-900/20' : 'border-white/60 focus:border-pink-400 dark:border-white/20 placeholder-slate-400 dark:placeholder-white/40'}`}
                           value={typingInput}
                           onChange={(e) => {
