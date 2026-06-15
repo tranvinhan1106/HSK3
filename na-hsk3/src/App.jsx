@@ -123,6 +123,7 @@ const StarryNightBackground = React.memo(() => {
         .twinkling { animation: twinkle 4s infinite ease-in-out alternate; }
         .shooting-star { position: absolute; width: 150px; height: 1px; background: linear-gradient(90deg, white, transparent); animation: shoot 8s infinite linear; opacity: 0; transform: rotate(-45deg); box-shadow: 0 0 10px white; }
         .shake-animation { animation: shake 0.5s cubic-bezier(.36,.07,.19,.97) both; }
+        /* CSS ẩn thanh cuộn cho mượt thẻ */
         .hide-scrollbar::-webkit-scrollbar { display: none; }
         .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         @keyframes twinkle { 0% { opacity: 0.3; } 100% { opacity: 1; box-shadow: 0 0 15px white; } }
@@ -215,6 +216,7 @@ export default function App() {
   const activeGroup = alphabetGroups.find(g => g.active);
   const [sessionProgressUpdates, setSessionProgressUpdates] = useState([]);
 
+  // KHỞI TẠO HỆ THỐNG
   useEffect(() => {
     async function bootApp() {
       try {
@@ -246,6 +248,7 @@ export default function App() {
     bootApp();
   }, [userId]);
 
+  // FETCH & FILTER THẺ
   useEffect(() => {
     async function fetchVocabularyAndProgress() {
       if (!activeGroup) return; 
@@ -368,17 +371,40 @@ export default function App() {
     { id: 3, title: 'Cao thủ Hán tự', condition: 'Thuộc 100 từ mới', rewardItem: 'Xem phim rạp 🎬', target: 100, current: stats.totalMastered, icon: Star, color: 'text-rose-500 dark:text-white', bgColor: 'bg-rose-100 dark:bg-white/10' },
   ];
 
+  // --- HÀM PHÁT ÂM THANH (KHÔI PHỤC ĐỘ TRỄ 50MS CHỐNG NUỐT ÂM) ---
   const playAudio = (text) => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      setTimeout(() => {
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = 'zh-CN'; 
-        utterance.rate = 0.85; 
-        window.speechSynthesis.speak(utterance);
-      }, 50);
-    }
+    if (!window.speechSynthesis) return;
+
+    // Hủy các luồng âm thanh đang bị kẹt
+    window.speechSynthesis.cancel();
+
+    // Dùng lại setTimeout 50ms theo yêu cầu của Na. 
+    // 50ms là đủ nhanh để không bị Safari block (dưới 1000ms), 
+    // và đủ trễ để engine TTS dọn dẹp sạch sẽ, không bị nuốt âm tiết đầu tiên!
+    setTimeout(() => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'zh-CN'; 
+      utterance.rate = 0.85; 
+
+      // Tìm và ép sử dụng đúng giọng tiếng Trung trên máy
+      const voices = window.speechSynthesis.getVoices();
+      const zhVoice = voices.find(voice => voice.lang === 'zh-CN' || voice.lang.includes('zh'));
+      if (zhVoice) {
+        utterance.voice = zhVoice;
+      }
+
+      window.speechSynthesis.speak(utterance);
+    }, 50); 
   };
+
+  // Hack để tải Voices ngay khi load trang
+  useEffect(() => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.getVoices();
+      };
+    }
+  }, []);
 
   const generateQuizOptions = (correctIndex, cardsList) => {
     if (cardsList.length < 4) return [];
@@ -506,7 +532,10 @@ export default function App() {
   };
 
   const flipCard = () => {
-    if (!isFlipped) setIsFlipped(true);
+    if (!isFlipped) {
+      setIsFlipped(true);
+      playAudio(flashcards[currentCardIndex].word);
+    }
   };
 
   const normalizePinyin = (str) => {
@@ -589,7 +618,6 @@ export default function App() {
           <StarryNightBackground />
           <MorningAuraBackground />
           
-          {/* Header trong phiên học */}
           <div className="relative z-10 px-3 sm:px-4 py-3 sm:py-4 flex items-center justify-between text-slate-600 dark:text-white">
             <button onClick={() => setCurrentScreen('dashboard')} className="p-1.5 sm:p-2 hover:bg-white/50 dark:hover:bg-white/10 rounded-full transition"><ArrowLeft className="w-5 h-5 sm:w-6 sm:h-6" /></button>
             <div className="flex-1 mx-2 sm:mx-4">
@@ -607,14 +635,12 @@ export default function App() {
           <div className="relative z-10 flex-1 flex flex-col justify-center px-4 pb-6 sm:pb-10 perspective-1000">
             <div 
               onClick={() => (!showEvalButtons && learningMode === 'standard' && !isFlipped) && flipCard()} 
-              // ĐIỂM SỬA QUAN TRỌNG NHẤT: Bỏ tỷ lệ cứng, thay bằng chiều cao động h-[60vh] với min-height
               className={`relative w-full max-w-md mx-auto h-[60vh] min-h-[420px] max-h-[550px] sm:h-[65vh] sm:min-h-[480px] ${(!isAutoGradeMode && !isFlipped) ? 'cursor-pointer' : ''}`}
               style={{ perspective: '1000px' }}
             >
               <div className="w-full h-full absolute transition-all duration-700 ease-in-out" style={{ transformStyle: 'preserve-3d', transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)' }}>
                 
                 {/* MẶT TRƯỚC */}
-                {/* ĐIỂM SỬA CUỘN (SCROLL): Thêm overflow-y-auto để khi bàn phím hiện ra thì Na có thể vuốt lên vuốt xuống */}
                 <div className="absolute w-full h-full bg-white/70 dark:bg-white/[0.03] backdrop-blur-xl rounded-3xl shadow-[0_20px_50px_rgba(244,114,182,0.15)] dark:shadow-[0_8px_32px_0_rgba(0,0,0,0.3)] p-5 sm:p-8 flex flex-col items-center justify-start sm:justify-center border border-white/60 dark:border-white/10 overflow-y-auto hide-scrollbar" style={{ backfaceVisibility: 'hidden' }}>
                   
                   {learningMode === 'visual' ? (
@@ -676,7 +702,6 @@ export default function App() {
                           onKeyDown={(e) => { if(e.key === 'Enter') handleTypingSubmit(); }}
                         />
 
-                        {/* BÀN PHÍM PINYIN CO GIÃN TỐT TRÊN MOBILE */}
                         {showKeyboard && (
                           <div className="w-full bg-white/80 dark:bg-black/40 backdrop-blur-md p-2 sm:p-3 rounded-xl border border-white/60 dark:border-white/10 shadow-lg flex flex-col gap-1 sm:gap-1.5">
                             <p className="text-[9px] sm:text-[10px] font-bold text-slate-500 dark:text-white/50 text-left uppercase tracking-wider pl-1">Pinyin có dấu</p>
@@ -705,7 +730,6 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="my-auto flex flex-col items-center">
-                      {/* TIÊU CHUẨN */}
                       <button onClick={(e) => { e.stopPropagation(); playAudio(card.word); }} className="mb-4 sm:mb-6 p-3 sm:p-4 bg-pink-100/50 dark:bg-white/10 text-pink-500 dark:text-white rounded-full hover:scale-110 transition-transform shadow-inner border border-white/50 dark:border-none">
                         <Volume2 className="w-6 h-6 sm:w-8 sm:h-8" />
                       </button>
@@ -725,7 +749,7 @@ export default function App() {
                   )}
                 </div>
 
-                {/* MẶT SAU (KẾT QUẢ) - Cũng thêm overflow */}
+                {/* MẶT SAU (KẾT QUẢ) */}
                 <div className="absolute w-full h-full bg-white/70 dark:bg-white/[0.05] backdrop-blur-2xl rounded-3xl shadow-[0_20px_50px_rgba(244,114,182,0.15)] dark:shadow-[0_8px_32px_0_rgba(0,0,0,0.3)] p-5 sm:p-8 flex flex-col border border-white/60 dark:border-white/10 overflow-y-auto hide-scrollbar" style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}>
 
                   <div className="flex justify-between items-start mb-3 sm:mb-4 border-b border-pink-100/50 dark:border-white/10 pb-2 sm:pb-3 shrink-0">
@@ -784,7 +808,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* ĐIỂM SỬA PADDING CHO NÚT ĐÁNH GIÁ (Gọn gàng trên Mobile) */}
           {showEvalButtons && (
             <div className={`relative z-10 px-3 sm:px-4 pb-6 sm:pb-8 max-w-md mx-auto w-full transition-opacity duration-300 ${isFlipped ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
               <div className="grid grid-cols-4 gap-1.5 sm:gap-2">
