@@ -168,7 +168,6 @@ const MorningAuraBackground = React.memo(() => {
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState('dashboard');
   const [isInitializing, setIsInitializing] = useState(true); 
-  // STATE MỚI: Dành cho thông báo lỗi/hết bài
   const [toastMessage, setToastMessage] = useState(null);
 
   const [userId] = useState(() => {
@@ -448,31 +447,31 @@ export default function App() {
     { id: 3, title: 'Cao thủ Hán tự', condition: 'Thuộc 100 từ mới', rewardItem: 'Xem phim rạp 🎬', target: 100, current: stats.totalMastered, icon: Star, color: 'text-rose-500 dark:text-white', bgColor: 'bg-rose-100 dark:bg-white/10' },
   ];
 
+  // --- HÀM PHÁT ÂM THANH ĐÃ BỎ HOÀN TOÀN SET_TIMEOUT ---
   const playAudio = (text) => {
     if (!window.speechSynthesis) return;
+    
+    // Hủy các luồng đang chờ
     window.speechSynthesis.cancel(); 
     
-    setTimeout(() => {
-      try {
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = 'zh-CN'; 
-        utterance.rate = 0.85; 
+    try {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'zh-CN'; 
+      utterance.rate = 0.85; 
 
-        const voices = window.speechSynthesis.getVoices();
-        const zhVoice = voices.find(voice => voice.lang === 'zh-CN' || voice.lang.includes('zh'));
-        if (zhVoice) {
-          utterance.voice = zhVoice;
-        }
-
-        window.speechSynthesis.speak(utterance);
-        
-        if (window.speechSynthesis.resume) {
-          window.speechSynthesis.resume();
-        }
-      } catch (err) {
-        console.error("Lỗi SpeechSynthesis:", err);
+      // Ép tìm giọng tiếng Trung chuẩn
+      const voices = window.speechSynthesis.getVoices();
+      const zhVoice = voices.find(voice => voice.lang === 'zh-CN' || voice.lang.includes('zh'));
+      if (zhVoice) {
+        utterance.voice = zhVoice;
       }
-    }, 50); 
+
+      // THỰC THI NGAY LẬP TỨC! KHÔNG ĐƯỢC CHỜ ĐỢI DÙ CHỈ 1ms
+      window.speechSynthesis.speak(utterance);
+      
+    } catch (err) {
+      console.error("Lỗi SpeechSynthesis:", err);
+    }
   };
 
   useEffect(() => {
@@ -546,7 +545,6 @@ export default function App() {
         sessionCards = [...reviewCards, ...newCards].slice(0, 15);
     }
 
-    // ĐIỂM SỬA QUAN TRỌNG: Hiển thị thông báo khi hết từ vựng thay vì đơ ứng dụng
     if (sessionCards.length === 0) {
         setIsLoading(false);
         setToastMessage(isReviewOnly 
@@ -569,27 +567,24 @@ export default function App() {
     setSelectedQuizOption(null);
     setIsLoading(false);
 
-    if (window.speechSynthesis) {
-       const unlockUtterance = new SpeechSynthesisUtterance('');
-       window.speechSynthesis.speak(unlockUtterance);
-    }
-
+    // Phát âm ngay từ đầu tiên nếu là chế độ có âm thanh
     if (learningMode === 'standard' || learningMode === 'listening') {
        playAudio(sessionCards[0].word);
     }
   };
 
   const handleStartLearning = () => {
-    // ĐIỂM SỬA QUAN TRỌNG: Dù Database rỗng vẫn cho chạy dữ liệu test
     if (allVocabulary.length === 0) {
        setFlashcards([
          { id: 998, word: "请", pronunciation: "qǐng", meaning: "Mời, xin hãy", example_sentence: "请进。", example_translation: "Mời vào.", interval: 0, ease_factor: 2.5 },
          { id: 999, word: "等", pronunciation: "děng", meaning: "Đợi", example_sentence: "请等一下。", example_translation: "Xin đợi một chút.", interval: 0, ease_factor: 2.5 }
        ]);
        setCurrentScreen('flashcard');
+       // Test âm thanh ngay trên dữ liệu ảo
+       if (learningMode === 'standard' || learningMode === 'listening') playAudio("请");
        return;
     }
-    
+    if (stats.reviewsToday > 100) return; 
     startSession(false);
   };
 
@@ -600,6 +595,12 @@ export default function App() {
 
   const handleEval = (gradeCode) => {
     const card = flashcards[currentCardIndex];
+    
+    // GỌI PHÁT ÂM ĐỒNG BỘ TRƯỚC KHI REACT STATE LÀM MẤT QUYỀN
+    if (currentCardIndex < flashcards.length - 1 && learningMode === 'standard') {
+       playAudio(flashcards[currentCardIndex + 1].word);
+    }
+
     let currentInterval = card.interval || 0;
     let currentEase = card.ease_factor || 2.5;
     let newInterval = currentInterval;
@@ -652,10 +653,6 @@ export default function App() {
       setHasTypingMistake(false);
       setSelectedQuizOption(null);
       setShowKeyboard(false); 
-
-      if (learningMode === 'standard') {
-         playAudio(flashcards[currentCardIndex + 1].word);
-      }
     } else {
       setStats(prev => {
         const updatedStats = { 
@@ -671,8 +668,8 @@ export default function App() {
 
   const flipCard = () => {
     if (!isFlipped) {
+      playAudio(flashcards[currentCardIndex].word); // Đồng bộ
       setIsFlipped(true);
-      playAudio(flashcards[currentCardIndex].word);
     }
   };
 
@@ -683,7 +680,8 @@ export default function App() {
   const handleTypingSubmit = () => {
     if (!typingInput) return;
     const card = flashcards[currentCardIndex];
-    
+    playAudio(card.word); // GỌI PHÁT ÂM NGAY TRƯỚC TIÊN
+
     const isExactMatch = typingInput.toLowerCase().replace(/\s/g, '') === card.pronunciation.toLowerCase().replace(/\s/g, '') || typingInput === card.word;
     const isTonelessMatch = normalizePinyin(typingInput) === normalizePinyin(card.pronunciation);
     const isCorrect = isExactMatch || isTonelessMatch;
@@ -691,7 +689,6 @@ export default function App() {
     if (isCorrect) {
       setTypingResult('correct');
       setIsFlipped(true);
-      playAudio(card.word); 
       setTimeout(() => {
         handleEval((hasTypingMistake || !isExactMatch) ? 1 : 2); 
       }, autoFlipDelay); 
@@ -702,7 +699,6 @@ export default function App() {
       if (newMistakes >= 3) {
         setTypingResult('failed');
         setIsFlipped(true);
-        playAudio(card.word);
         setFlashcards(prev => [...prev, { ...card, is_requeued: true }]);
       } else {
         setHasTypingMistake(true);
@@ -715,10 +711,10 @@ export default function App() {
   };
 
   const handleVisualSelect = (optId) => {
+    playAudio(flashcards[currentCardIndex].word); // GỌI ĐỒNG BỘ ĐẦU TIÊN
     setSelectedQuizOption(optId);
     const isCorrect = optId === flashcards[currentCardIndex].id;
     setIsFlipped(true);
-    playAudio(flashcards[currentCardIndex].word); 
 
     setTimeout(() => {
       handleEval(isCorrect ? 2 : 0);
@@ -920,6 +916,7 @@ export default function App() {
                         </div>
                       )}
 
+                      {/* Phản hồi Auto-grade cho Visual */}
                       {learningMode === 'visual' && selectedQuizOption !== null && (
                         <div className={`mt-3 sm:mt-4 p-3 sm:p-4 rounded-xl border-2 backdrop-blur-sm ${selectedQuizOption === card.id ? 'bg-emerald-100/80 border-emerald-400 text-emerald-800 dark:bg-emerald-900/40 dark:border-emerald-500/50 dark:text-emerald-300' : 'bg-rose-100/80 border-rose-400 text-rose-800 dark:bg-rose-900/40 dark:border-rose-500/50 dark:text-rose-300'}`}>
                           <span className="text-[9px] sm:text-[10px] uppercase font-bold block mb-1">Na đã chọn chữ này:</span>
