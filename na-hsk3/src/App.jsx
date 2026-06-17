@@ -7,7 +7,7 @@ import {
   Cookie, ScanSearch, Settings, X
 } from 'lucide-react';
 
-// --- KẾT NỐI SUPABASE ---
+// --- KẾT NỐI SUPABASE BẰNG FETCH NATIVE (Kháng lỗi biên dịch Vercel) ---
 const supabaseUrl = 'https://nrqivqjmnodoyjvppcxh.supabase.co'; 
 const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5ycWl2cWptbm9kb3lqdnBwY3hoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyOTA3NjIsImV4cCI6MjA5Njg2Njc2Mn0.alMJZ2BmSk5schZ0G65vgz3Fi0vK7ZHIh-LOI4huEmI';
 
@@ -26,7 +26,10 @@ const supabase = {
         eqFilters.forEach(f => url += `&${f.col}=eq.${f.val}`);
         try {
           const res = await fetch(url, { headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}` } });
-          if (!res.ok) throw await res.json();
+          if (!res.ok) {
+             const err = await res.json().catch(() => ({}));
+             throw err;
+          }
           let data = await res.json();
           if (isSingle) {
             if (data.length === 0) throw { code: 'PGRST116' };
@@ -50,7 +53,7 @@ const supabase = {
         const res = await fetch(`${supabaseUrl}/rest/v1/${table}`, {
           method: 'POST',
           headers: { 'apikey': supabaseAnonKey, 'Authorization': `Bearer ${supabaseAnonKey}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-          body: JSON.stringify(payload[0])
+          body: JSON.stringify(Array.isArray(payload) ? payload : [payload])
         });
         if (!res.ok) throw await res.json();
         return { data: true, error: null };
@@ -72,9 +75,11 @@ const supabase = {
       };
       return queryObj;
     },
-    upsert: async (payload) => {
+    upsert: async (payload, options = {}) => {
       try {
-        const res = await fetch(`${supabaseUrl}/rest/v1/${table}`, {
+        let url = `${supabaseUrl}/rest/v1/${table}`;
+        if (options.onConflict) url += `?on_conflict=${options.onConflict}`;
+        const res = await fetch(url, {
           method: 'POST',
           headers: { 
             'apikey': supabaseAnonKey, 
@@ -82,7 +87,7 @@ const supabase = {
             'Content-Type': 'application/json', 
             'Prefer': 'return=minimal, resolution=merge-duplicates' 
           },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(Array.isArray(payload) ? payload : [payload])
         });
         if (!res.ok) throw await res.json();
         return { data: true, error: null };
@@ -123,7 +128,6 @@ const StarryNightBackground = React.memo(() => {
         .twinkling { animation: twinkle 4s infinite ease-in-out alternate; }
         .shooting-star { position: absolute; width: 150px; height: 1px; background: linear-gradient(90deg, white, transparent); animation: shoot 8s infinite linear; opacity: 0; transform: rotate(-45deg); box-shadow: 0 0 10px white; }
         .shake-animation { animation: shake 0.5s cubic-bezier(.36,.07,.19,.97) both; }
-        /* CSS ẩn thanh cuộn cho mượt thẻ */
         .hide-scrollbar::-webkit-scrollbar { display: none; }
         .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         @keyframes twinkle { 0% { opacity: 0.3; } 100% { opacity: 1; box-shadow: 0 0 15px white; } }
@@ -164,6 +168,8 @@ const MorningAuraBackground = React.memo(() => {
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState('dashboard');
   const [isInitializing, setIsInitializing] = useState(true); 
+  // STATE MỚI: Dành cho thông báo lỗi/hết bài
+  const [toastMessage, setToastMessage] = useState(null);
 
   const [userId] = useState(() => {
     let id = localStorage.getItem('na_hsk_device_id');
@@ -215,95 +221,166 @@ export default function App() {
   const [alphabetGroups, setAlphabetGroups] = useState([]);
   const activeGroup = alphabetGroups.find(g => g.active);
   const [sessionProgressUpdates, setSessionProgressUpdates] = useState([]);
+  
+  const [allVocabulary, setAllVocabulary] = useState([]);
+  const [userProgressMap, setUserProgressMap] = useState({});
 
-  // KHỞI TẠO HỆ THỐNG
   useEffect(() => {
     async function bootApp() {
-      try {
-        const { data: groupsData, error: groupsError } = await supabase.from('alphabet_groups').select('*').order('id');
-        if (groupsError) throw groupsError;
-        
-        if (groupsData && groupsData.length > 0) {
-          setAlphabetGroups(groupsData.map((g, index) => ({
-            ...g, color: GROUP_COLORS[index % GROUP_COLORS.length], learned: 0, total: 30, active: index === 0
-          })));
-        }
+      setIsInitializing(true);
+      
+      let fetchedGroups = [];
+      let fetchedVocab = [];
+      let fetchedProgress = {};
+      let fetchedStats = null;
 
-        const { data: userStats, error: statsError } = await supabase.from('user_stats').select('*').eq('user_id', userId).single();
-        if (userStats) {
-          setStats(prev => ({
-            ...prev, streakDays: userStats.streak_days || 0, petLevel: userStats.pet_level || 1,
-            petExp: userStats.pet_exp || 0, petFood: userStats.pet_food || 0, lastCheckin: userStats.last_checkin_date,
-            totalMastered: userStats.words_learned || 0
-          }));
-        } else if (statsError && statsError.code === 'PGRST116') {
-          await supabase.from('user_stats').insert([{ user_id: userId }]);
+      try {
+        const { data, error } = await supabase.from('alphabet_groups').select('*').order('id');
+        if (!error && data && data.length > 0) fetchedGroups = data;
+      } catch (e) { console.error("Lỗi tải Nhóm từ:", e); }
+
+      try {
+        const { data, error } = await supabase.from('vocabulary').select('*');
+        if (!error && data) fetchedVocab = data;
+      } catch (e) { console.error("Lỗi tải Từ vựng:", e); }
+
+      try {
+        const { data, error } = await supabase.from('user_progress').select('*').eq('user_id', userId);
+        if (!error && data) {
+          const pList = Array.isArray(data) ? data : [data];
+          pList.forEach(p => { fetchedProgress[p.word_id] = p; });
         }
-      } catch (error) {
-        console.error("Lỗi Boot App:", error);
-      } finally {
-        setIsInitializing(false); 
+      } catch (e) { console.error("Lỗi tải Tiến độ:", e); }
+
+      try {
+        const { data, error } = await supabase.from('user_stats').select('*').eq('user_id', userId).single();
+        if (data) fetchedStats = data;
+        
+        if (error && error.code === 'PGRST116') {
+           await supabase.from('user_stats').upsert([{ user_id: userId }]);
+        }
+      } catch (e) { console.error("Lỗi tải Thống kê:", e); }
+
+      if (fetchedGroups.length === 0) {
+        fetchedGroups = [
+          { id: 1, name: 'Nhóm A - F', total: 50, learned: 0, active: true },
+          { id: 2, name: 'Nhóm G - M', total: 50, learned: 0, active: false },
+          { id: 3, name: 'Nhóm N - S', total: 50, learned: 0, active: false },
+          { id: 4, name: 'Nhóm T - Z', total: 50, learned: 0, active: false }
+        ];
       }
+
+      setAllVocabulary(fetchedVocab);
+      setUserProgressMap(fetchedProgress);
+
+      const groupTotals = {};
+      const groupLearnedCount = {};
+      fetchedVocab.forEach(v => { 
+        groupTotals[v.group_id] = (groupTotals[v.group_id] || 0) + 1; 
+        if (fetchedProgress[v.id]) {
+          groupLearnedCount[v.group_id] = (groupLearnedCount[v.group_id] || 0) + 1;
+        }
+      });
+
+      const processedGroups = fetchedGroups.map((g, index) => ({ 
+        ...g, 
+        color: GROUP_COLORS[index % GROUP_COLORS.length],
+        active: index === 0,
+        total: groupTotals[g.id] || g.total || 50,
+        learned: groupLearnedCount[g.id] || 0
+      }));
+      setAlphabetGroups(processedGroups);
+
+      const now = new Date().getTime();
+      let reviewCount = 0;
+      fetchedVocab.forEach(word => {
+        const prog = fetchedProgress[word.id];
+        if (prog && new Date(prog.next_review_date).getTime() <= now) {
+          reviewCount++;
+        }
+      });
+
+      if (fetchedStats) {
+        setStats({
+          streakDays: fetchedStats.streak_days || 0, 
+          totalStudied: Object.keys(fetchedProgress).length, 
+          totalMastered: fetchedStats.words_learned || 0, 
+          dailyGoalProgress: 0, 
+          dailyGoalTotal: 50, 
+          reviewsToday: reviewCount, 
+          petLevel: fetchedStats.pet_level || 1, 
+          petExp: fetchedStats.pet_exp || 0, 
+          petFood: fetchedStats.pet_food || 0, 
+          lastCheckin: fetchedStats.last_checkin_date 
+        });
+      } else {
+        setStats(prev => ({ ...prev, reviewsToday: reviewCount, totalStudied: Object.keys(fetchedProgress).length }));
+      }
+
+      setIsInitializing(false); 
     }
+    
     bootApp();
   }, [userId]);
 
-  // FETCH & FILTER THẺ
   useEffect(() => {
-    async function fetchVocabularyAndProgress() {
-      if (!activeGroup) return; 
-      try {
-        setIsLoading(true);
-        const { data: vocabData, error: vocabError } = await supabase.from('vocabulary').select('*').eq('group_id', activeGroup.id);
-        if (vocabError) throw vocabError;
+    if (isInitializing || allVocabulary.length === 0) return;
 
-        const { data: progressData, error: progressError } = await supabase.from('user_progress').select('*').eq('user_id', userId);
-        if (progressError && progressError.code !== 'PGRST116') throw progressError;
+    const now = new Date().getTime();
+    let reviewCount = 0;
+    const groupLearnedCount = {};
 
-        const pList = progressData ? (Array.isArray(progressData) ? progressData : [progressData]) : [];
-        const progressMap = {};
-        pList.forEach(p => { progressMap[p.word_id] = p; });
-
-        const now = new Date().getTime();
-        let reviewCards = [];
-        let newCards = [];
-
-        (vocabData || []).forEach(word => {
-          const prog = progressMap[word.id];
-          if (prog) {
-            const reviewTime = new Date(prog.next_review_date).getTime();
-            if (reviewTime <= now) {
-              reviewCards.push({ ...word, interval: prog.interval, ease_factor: prog.ease_factor, is_review: true });
-            }
-          } else {
-            newCards.push({ ...word, interval: 0, ease_factor: 2.5, is_review: false });
-          }
-        });
-
-        const sessionCards = [...reviewCards, ...newCards].sort(() => Math.random() - 0.5).slice(0, 15);
-        setFlashcards(sessionCards);
-
-        setStats(prev => ({ ...prev, reviewsToday: reviewCards.length }));
-
-      } catch (error) {
-        console.error("Lỗi tải từ vựng:", error);
-      } finally {
-        setIsLoading(false);
+    allVocabulary.forEach(word => {
+      const prog = userProgressMap[word.id];
+      if (prog) {
+        groupLearnedCount[word.group_id] = (groupLearnedCount[word.group_id] || 0) + 1;
+        const reviewTime = new Date(prog.next_review_date).getTime();
+        if (reviewTime <= now) {
+          reviewCount++;
+        }
       }
-    }
-    fetchVocabularyAndProgress();
-  }, [activeGroup?.id, userId]); 
+    });
+
+    setStats(prev => ({ 
+      ...prev, 
+      reviewsToday: reviewCount,
+      totalStudied: Object.keys(userProgressMap).length
+    }));
+
+    setAlphabetGroups(prevGroups => prevGroups.map(g => ({
+      ...g,
+      learned: groupLearnedCount[g.id] || 0
+    })));
+  }, [userProgressMap, allVocabulary, isInitializing]);
 
   const syncStatsToCloud = async (newStats, progressBatch = []) => {
     try {
       await supabase.from('user_stats').update({
-        streak_days: newStats.streakDays, last_checkin_date: newStats.lastCheckin, pet_level: newStats.petLevel,
-        pet_exp: newStats.petExp, pet_food: newStats.petFood, words_learned: newStats.totalMastered
+        streak_days: newStats.streakDays, 
+        last_checkin_date: newStats.lastCheckin, 
+        pet_level: newStats.petLevel,
+        pet_exp: newStats.petExp, 
+        pet_food: newStats.petFood, 
+        words_learned: newStats.totalMastered
       }).eq('user_id', userId);
 
       if (progressBatch.length > 0) {
-        const uniqueBatch = progressBatch.filter(p => !p.is_requeued);
-        await supabase.from('user_progress').upsert(uniqueBatch);
+        const finalUpdatesMap = new Map();
+        progressBatch.forEach(p => {
+            const { is_requeued, ...cleanRecord } = p; 
+            finalUpdatesMap.set(cleanRecord.word_id, cleanRecord);
+        });
+        const finalBatch = Array.from(finalUpdatesMap.values());
+        
+        await supabase.from('user_progress').upsert(finalBatch, { onConflict: 'user_id,word_id' });
+
+        setUserProgressMap(prev => {
+          const nextMap = { ...prev };
+          finalBatch.forEach(record => {
+            nextMap[record.word_id] = record;
+          });
+          return nextMap;
+        });
       }
     } catch (error) {
       console.error("Lỗi đồng bộ Đám mây:", error);
@@ -358,7 +435,7 @@ export default function App() {
   const [selectedQuizOption, setSelectedQuizOption] = useState(null);
 
   const [flashcards, setFlashcards] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false); 
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
   const [sessionMastered, setSessionMastered] = useState(0); 
@@ -371,33 +448,33 @@ export default function App() {
     { id: 3, title: 'Cao thủ Hán tự', condition: 'Thuộc 100 từ mới', rewardItem: 'Xem phim rạp 🎬', target: 100, current: stats.totalMastered, icon: Star, color: 'text-rose-500 dark:text-white', bgColor: 'bg-rose-100 dark:bg-white/10' },
   ];
 
-  // --- ĐẠI PHẪU: HÀM PHÁT ÂM THANH MỚI (CHỐNG LỖI IOS/VERCEL) ---
   const playAudio = (text) => {
     if (!window.speechSynthesis) return;
-
-    window.speechSynthesis.cancel(); // Xóa luồng kẹt
+    window.speechSynthesis.cancel(); 
     
-    // KHÔNG dùng setTimeout để tránh bị Safari/Trình duyệt di động chặn Autoplay
-    // Trình duyệt đòi hỏi hàm này phải được gọi "ĐỒNG BỘ" với sự kiện nhấp chuột
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'zh-CN'; 
-    utterance.rate = 0.85; 
+    setTimeout(() => {
+      try {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'zh-CN'; 
+        utterance.rate = 0.85; 
 
-    const voices = window.speechSynthesis.getVoices();
-    const zhVoice = voices.find(voice => voice.lang === 'zh-CN' || voice.lang.includes('zh'));
-    if (zhVoice) {
-      utterance.voice = zhVoice;
-    }
+        const voices = window.speechSynthesis.getVoices();
+        const zhVoice = voices.find(voice => voice.lang === 'zh-CN' || voice.lang.includes('zh'));
+        if (zhVoice) {
+          utterance.voice = zhVoice;
+        }
 
-    window.speechSynthesis.speak(utterance);
-    
-    // Thủ thuật chống "ngủ quên" của SpeechSynthesis trên iOS
-    if (window.speechSynthesis.resume) {
-      window.speechSynthesis.resume();
-    }
+        window.speechSynthesis.speak(utterance);
+        
+        if (window.speechSynthesis.resume) {
+          window.speechSynthesis.resume();
+        }
+      } catch (err) {
+        console.error("Lỗi SpeechSynthesis:", err);
+      }
+    }, 50); 
   };
 
-  // Hack để tải Voices ngay khi load trang
   useEffect(() => {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.onvoiceschanged = () => {
@@ -421,10 +498,8 @@ export default function App() {
     return options.sort(() => Math.random() - 0.5);
   };
 
-  // ĐIỂM SỬA QUAN TRỌNG: GỠ BỎ TỰ ĐỘNG PHÁT ÂM TRONG USE_EFFECT ĐỂ CHIỀU LÒNG ĐIỆN THOẠI
   useEffect(() => {
     if (currentScreen === 'flashcard' && !isFlipped && flashcards.length > 0) {
-      // Đã gỡ lệnh playAudio ở đây. Nó chỉ dùng để set focus và generate Quiz
       if ((learningMode === 'typing' || learningMode === 'listening') && inputRef.current && !showKeyboard) {
         inputRef.current.focus();
       }
@@ -439,10 +514,49 @@ export default function App() {
     setAlphabetGroups(prev => prev.map(g => ({ ...g, active: g.id === groupId })));
   };
 
-  // HÀM KHỞI TẠO PHIÊN HỌC CHUẨN
-  const startSession = () => {
-    const sortedCards = [...flashcards].sort(() => Math.random() - 0.5); 
-    setFlashcards(sortedCards);
+  const startSession = (isReviewOnly = false) => {
+    setIsLoading(true);
+    const now = new Date().getTime();
+    let reviewCards = [];
+    let newCards = [];
+
+    const sourceVocab = isReviewOnly ? allVocabulary : allVocabulary.filter(w => w.group_id === activeGroup?.id);
+
+    sourceVocab.forEach(word => {
+      const prog = userProgressMap[word.id];
+      if (prog) {
+        const reviewTime = new Date(prog.next_review_date).getTime();
+        if (reviewTime <= now) {
+          reviewCards.push({ ...word, interval: prog.interval, ease_factor: prog.ease_factor, is_review: true });
+        }
+      } else {
+        if (!isReviewOnly) {
+          newCards.push({ ...word, interval: 0, ease_factor: 2.5, is_review: false });
+        }
+      }
+    });
+
+    reviewCards = reviewCards.sort(() => Math.random() - 0.5);
+    newCards = newCards.sort(() => Math.random() - 0.5);
+
+    let sessionCards = [];
+    if (isReviewOnly) {
+        sessionCards = reviewCards.slice(0, 15);
+    } else {
+        sessionCards = [...reviewCards, ...newCards].slice(0, 15);
+    }
+
+    // ĐIỂM SỬA QUAN TRỌNG: Hiển thị thông báo khi hết từ vựng thay vì đơ ứng dụng
+    if (sessionCards.length === 0) {
+        setIsLoading(false);
+        setToastMessage(isReviewOnly 
+            ? "Tuyệt vời! Na đã ôn tập xong tất cả từ vựng hôm nay. 🎉" 
+            : "Na đã học hết 100% từ vựng của nhóm này rồi. Hãy chọn nhóm khác nhé! ✨");
+        setTimeout(() => setToastMessage(null), 4000);
+        return; 
+    }
+
+    setFlashcards(sessionCards);
     setCurrentScreen('flashcard');
     setCurrentCardIndex(0);
     setIsFlipped(false);
@@ -453,28 +567,35 @@ export default function App() {
     setHasTypingMistake(false);
     setSessionProgressUpdates([]); 
     setSelectedQuizOption(null);
+    setIsLoading(false);
 
-    // BƯỚC KHAI THÔNG ÂM THANH CHO MOBILE: 
-    // Đọc một chuỗi rỗng NGAY LẬP TỨC khi Na bấm nút "Bắt đầu" để mở khóa AudioContext
     if (window.speechSynthesis) {
        const unlockUtterance = new SpeechSynthesisUtterance('');
        window.speechSynthesis.speak(unlockUtterance);
     }
 
-    // Sau khi khai thông, đọc ngay từ đầu tiên (Nếu học Tiêu chuẩn hoặc Nghe)
     if (learningMode === 'standard' || learningMode === 'listening') {
-       playAudio(sortedCards[0].word);
+       playAudio(sessionCards[0].word);
     }
   };
 
   const handleStartLearning = () => {
-    if (flashcards.length === 0 || stats.reviewsToday > 100) return; 
-    startSession();
+    // ĐIỂM SỬA QUAN TRỌNG: Dù Database rỗng vẫn cho chạy dữ liệu test
+    if (allVocabulary.length === 0) {
+       setFlashcards([
+         { id: 998, word: "请", pronunciation: "qǐng", meaning: "Mời, xin hãy", example_sentence: "请进。", example_translation: "Mời vào.", interval: 0, ease_factor: 2.5 },
+         { id: 999, word: "等", pronunciation: "děng", meaning: "Đợi", example_sentence: "请等一下。", example_translation: "Xin đợi một chút.", interval: 0, ease_factor: 2.5 }
+       ]);
+       setCurrentScreen('flashcard');
+       return;
+    }
+    
+    startSession(false);
   };
 
   const handleStartReview = () => {
     if (stats.reviewsToday === 0) return;
-    startSession();
+    startSession(true);
   };
 
   const handleEval = (gradeCode) => {
@@ -532,7 +653,6 @@ export default function App() {
       setSelectedQuizOption(null);
       setShowKeyboard(false); 
 
-      // Phát âm từ tiếp theo NẾU đang học Tiêu chuẩn (vì thao tác này được trigger bằng click tay)
       if (learningMode === 'standard') {
          playAudio(flashcards[currentCardIndex + 1].word);
       }
@@ -571,7 +691,7 @@ export default function App() {
     if (isCorrect) {
       setTypingResult('correct');
       setIsFlipped(true);
-      playAudio(card.word);
+      playAudio(card.word); 
       setTimeout(() => {
         handleEval((hasTypingMistake || !isExactMatch) ? 1 : 2); 
       }, autoFlipDelay); 
@@ -598,7 +718,7 @@ export default function App() {
     setSelectedQuizOption(optId);
     const isCorrect = optId === flashcards[currentCardIndex].id;
     setIsFlipped(true);
-    playAudio(flashcards[currentCardIndex].word);
+    playAudio(flashcards[currentCardIndex].word); 
 
     setTimeout(() => {
       handleEval(isCorrect ? 2 : 0);
@@ -689,6 +809,7 @@ export default function App() {
                   ) : (learningMode === 'typing' || learningMode === 'listening') ? (
                     <div className="flex flex-col items-center text-center w-full h-full justify-center relative pt-8 pb-4 my-auto">
                       
+                      {/* Nút bật/tắt bàn phím Pinyin */}
                       <button 
                         onClick={(e) => { e.stopPropagation(); setShowKeyboard(!showKeyboard); }} 
                         className={`absolute top-0 right-0 p-1.5 sm:p-2 rounded-lg sm:rounded-xl border transition-all z-20 ${showKeyboard ? 'bg-pink-400 border-pink-500 text-white shadow-inner' : 'bg-white/50 dark:bg-white/10 border-white/60 dark:border-white/20 text-slate-500 dark:text-white/60 hover:bg-white/80 dark:hover:bg-white/20'}`}
@@ -710,7 +831,7 @@ export default function App() {
                         <input 
                           ref={inputRef}
                           type="text" 
-                          placeholder={hasTypingMistake ? `Gợi ý Pinyin: ${card.pronunciation}` : "Nhập Pinyin (được gõ không dấu)"}
+                          placeholder={hasTypingMistake ? `Gợi ý Pinyin: ${card.pronunciation}` : "Nhập Pinyin (hỗ trợ không dấu) hoặc Hán tự"}
                           className={`w-full bg-white/50 dark:bg-black/20 border-2 focus:outline-none transition-colors text-center text-base sm:text-lg md:text-xl font-medium rounded-xl px-3 py-3 sm:px-4 sm:py-4 text-slate-700 dark:text-white ${hasTypingMistake ? 'border-rose-400 dark:border-rose-500 placeholder-rose-400/70 dark:placeholder-rose-300/70 shake-animation bg-rose-50/50 dark:bg-rose-900/20' : 'border-white/60 focus:border-pink-400 dark:border-white/20 placeholder-slate-400 dark:placeholder-white/40'}`}
                           value={typingInput}
                           onChange={(e) => {
@@ -720,6 +841,7 @@ export default function App() {
                           onKeyDown={(e) => { if(e.key === 'Enter') handleTypingSubmit(); }}
                         />
 
+                        {/* BÀN PHÍM PINYIN ẢO */}
                         {showKeyboard && (
                           <div className="w-full bg-white/80 dark:bg-black/40 backdrop-blur-md p-2 sm:p-3 rounded-xl border border-white/60 dark:border-white/10 shadow-lg flex flex-col gap-1 sm:gap-1.5">
                             <p className="text-[9px] sm:text-[10px] font-bold text-slate-500 dark:text-white/50 text-left uppercase tracking-wider pl-1">Pinyin có dấu</p>
@@ -784,7 +906,7 @@ export default function App() {
                       <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-rose-500 dark:text-white/50 mb-1 block">Ý Nghĩa</span>
                       <p className="text-xl sm:text-2xl font-bold text-slate-700 dark:text-white leading-tight">{card.meaning}</p>
                       
-                      {/* Phản hồi Auto-grade cho Typing/Listening */}
+                      {/* Phản hồi Auto-grade */}
                       {(learningMode === 'typing' || learningMode === 'listening') && typingResult && (
                         <div className={`mt-3 sm:mt-4 p-3 sm:p-4 rounded-xl border-2 backdrop-blur-sm ${typingResult === 'correct' ? 'bg-emerald-100/80 border-emerald-400 text-emerald-800 dark:bg-emerald-900/40 dark:border-emerald-500/50 dark:text-emerald-300' : 'bg-rose-100/80 border-rose-400 text-rose-800 dark:bg-rose-900/40 dark:border-rose-500/50 dark:text-rose-300'}`}>
                           <span className="text-[9px] sm:text-[10px] uppercase font-bold block mb-1">Thành tích của Na:</span>
@@ -798,7 +920,6 @@ export default function App() {
                         </div>
                       )}
 
-                      {/* Phản hồi Auto-grade cho Visual */}
                       {learningMode === 'visual' && selectedQuizOption !== null && (
                         <div className={`mt-3 sm:mt-4 p-3 sm:p-4 rounded-xl border-2 backdrop-blur-sm ${selectedQuizOption === card.id ? 'bg-emerald-100/80 border-emerald-400 text-emerald-800 dark:bg-emerald-900/40 dark:border-emerald-500/50 dark:text-emerald-300' : 'bg-rose-100/80 border-rose-400 text-rose-800 dark:bg-rose-900/40 dark:border-rose-500/50 dark:text-rose-300'}`}>
                           <span className="text-[9px] sm:text-[10px] uppercase font-bold block mb-1">Na đã chọn chữ này:</span>
@@ -826,6 +947,7 @@ export default function App() {
             </div>
           </div>
 
+          {/* CHỈ HIỂN THỊ NÚT ĐÁNH GIÁ KHI HỌC TIÊU CHUẨN HOẶC BỊ PHẠT DO SAI */}
           {showEvalButtons && (
             <div className={`relative z-10 px-3 sm:px-4 pb-6 sm:pb-8 max-w-md mx-auto w-full transition-opacity duration-300 ${isFlipped ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
               <div className="grid grid-cols-4 gap-1.5 sm:gap-2">
@@ -887,6 +1009,13 @@ export default function App() {
         <StarryNightBackground />
         <MorningAuraBackground />
         
+        {/* HIỂN THỊ THÔNG BÁO TOAST THÔNG MINH */}
+        {toastMessage && (
+          <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[100] bg-slate-800 dark:bg-pink-500 text-white px-6 py-3 rounded-full shadow-2xl animate-bounce text-sm font-bold text-center w-max max-w-[90vw] border border-white/20">
+            {toastMessage}
+          </div>
+        )}
+
         {/* MODAL CÀI ĐẶT */}
         {isSettingsOpen && (
           <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
@@ -951,7 +1080,17 @@ export default function App() {
           </div>
         </header>
 
-        <main className="relative z-10 max-w-2xl mx-auto px-3 sm:px-4 mt-4 sm:mt-6 space-y-4 sm:space-y-6 md:space-y-8">
+        {/* THÔNG BÁO LƯU Ý CHO NGƯỜI DÙNG IPHONE */}
+        <div className="max-w-2xl mx-auto px-3 mt-3">
+          <div className="bg-pink-50/80 dark:bg-pink-950/20 border border-pink-100 dark:border-pink-900/30 rounded-xl p-3 text-xs text-pink-700 dark:text-pink-300 flex items-center gap-2">
+            <span>💡</span>
+            <p className="leading-relaxed">
+              <strong>Lưu ý cho iPhone:</strong> Đảm bảo bạn <strong>không gạt nút Im lặng vật lý</strong> ở sườn máy (Silent Switch) về màu cam để trình duyệt được phép phát âm thanh nhé!
+            </p>
+          </div>
+        </div>
+
+        <main className="relative z-10 max-w-2xl mx-auto px-3 sm:px-4 mt-1 sm:mt-2 space-y-4 sm:space-y-6 md:space-y-8">
           
           <div className="bg-white/40 dark:bg-white/5 backdrop-blur-lg rounded-2xl sm:rounded-3xl p-4 sm:p-5 md:p-6 shadow-sm shadow-pink-100/30 dark:shadow-none border border-white/50 dark:border-white/10 relative overflow-hidden">
             <div className="absolute top-0 right-0 w-24 h-24 sm:w-32 sm:h-32 bg-pink-300/20 dark:bg-blue-500/10 rounded-full blur-2xl pointer-events-none"></div>
@@ -1035,7 +1174,7 @@ export default function App() {
                       ? 'bg-white/40 dark:bg-black/30 text-slate-500 dark:text-white/40 border-white/50 dark:border-white/5' 
                       : 'bg-white/60 dark:bg-white/10 backdrop-blur-sm text-pink-600 dark:text-white/90 border-white/50 dark:border-white/20'
                   }`}>
-                    Bước 2: Học ({activeGroup?.name.split(' ')[1] || '...'})
+                    Bước 2: Học ({activeGroup?.name?.split(' ')[1] || '...'})
                   </span>
                   <div className="mt-1.5 sm:mt-2 mb-3 sm:mb-4">
                     <h2 className={`text-3xl sm:text-4xl font-extrabold mb-0.5 sm:mb-1 drop-shadow-sm leading-none ${stats.reviewsToday > 100 ? 'text-slate-400 dark:text-white/30' : 'text-slate-800 dark:text-white'}`}>
@@ -1054,7 +1193,7 @@ export default function App() {
                 ) : (
                   <button 
                     onClick={handleStartLearning}
-                    disabled={isLoading || flashcards.length === 0}
+                    disabled={isLoading}
                     className="w-full bg-white/80 dark:bg-[#0B1021]/40 dark:backdrop-blur-md text-pink-600 dark:text-white font-bold py-3 sm:py-4 rounded-xl flex items-center justify-center gap-1.5 sm:gap-2 hover:bg-white dark:hover:bg-[#0B1021]/60 transition-all active:scale-95 shadow-md disabled:opacity-70 border border-white dark:border-white/10 dark:shadow-none mt-1 sm:mt-2 text-sm sm:text-base"
                   >
                     {isLoading ? <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin text-pink-500 dark:text-white" /> : <Play className="w-4 h-4 sm:w-5 sm:h-5 fill-pink-500 dark:fill-white" />}
@@ -1126,8 +1265,8 @@ export default function App() {
             </div>
             <div className="space-y-2.5 sm:space-y-3">
               {alphabetGroups.map(group => {
-                const isCompleted = group.learned === group.total;
-                const progressPercent = (group.learned / group.total) * 100;
+                const isCompleted = group.learned === group.total && group.total > 0;
+                const progressPercent = group.total > 0 ? (group.learned / group.total) * 100 : 0;
                 return (
                   <div key={group.id} onClick={() => handleSelectGroup(group.id)} className={`bg-white/60 dark:bg-white/5 backdrop-blur-md p-3 sm:p-4 rounded-xl sm:rounded-2xl border transition-all cursor-pointer active:scale-[0.98] ${group.active ? 'border-pink-300 dark:border-white/30 shadow-md shadow-pink-200/50 dark:shadow-[0_0_15px_rgba(255,255,255,0.05)] ring-2 ring-pink-100 dark:ring-white/10 transform scale-[1.02]' : 'border-white/50 dark:border-transparent hover:border-pink-200 dark:hover:border-white/20 hover:bg-white/80'}`}>
                     <div className="flex items-center gap-3 sm:gap-4">
