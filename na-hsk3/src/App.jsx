@@ -195,11 +195,36 @@ export default function App() {
     }
     return 1500;
   });
+
+  const [audioSpeed, setAudioSpeed] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('na_hsk_audio_speed');
+      return saved ? parseFloat(saved) : 0.85;
+    }
+    return 0.85;
+  });
+
+  const [dailyGoal, setDailyGoal] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('na_hsk_daily_goal');
+      return saved ? parseInt(saved) : 50;
+    }
+    return 50;
+  });
+
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   useEffect(() => {
     localStorage.setItem('na_hsk_flip_delay', autoFlipDelay);
   }, [autoFlipDelay]);
+
+  useEffect(() => {
+    localStorage.setItem('na_hsk_audio_speed', audioSpeed);
+  }, [audioSpeed]);
+
+  useEffect(() => {
+    localStorage.setItem('na_hsk_daily_goal', dailyGoal);
+  }, [dailyGoal]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -218,7 +243,7 @@ export default function App() {
   });
 
   const [alphabetGroups, setAlphabetGroups] = useState([]);
-  const activeGroup = alphabetGroups.find(g => g.active);
+  const activeGroup = alphabetGroups.find(g => g.active) || alphabetGroups[0];
   const [sessionProgressUpdates, setSessionProgressUpdates] = useState([]);
   
   const [allVocabulary, setAllVocabulary] = useState([]);
@@ -261,6 +286,7 @@ export default function App() {
       } catch (e) { console.error("Lỗi tải Thống kê:", e); }
 
       if (fetchedGroups.length === 0) {
+        console.warn("Kích hoạt Dữ liệu dự phòng do Database trống hoặc bị chặn RLS.");
         fetchedGroups = [
           { id: 1, name: 'Nhóm A - F', total: 50, learned: 0, active: true },
           { id: 2, name: 'Nhóm G - M', total: 50, learned: 0, active: false },
@@ -285,7 +311,7 @@ export default function App() {
         ...g, 
         color: GROUP_COLORS[index % GROUP_COLORS.length],
         active: index === 0,
-        total: groupTotals[g.id] || g.total || 50,
+        total: dailyGoal, 
         learned: groupLearnedCount[g.id] || 0
       }));
       setAlphabetGroups(processedGroups);
@@ -305,7 +331,7 @@ export default function App() {
           totalStudied: Object.keys(fetchedProgress).length, 
           totalMastered: fetchedStats.words_learned || 0, 
           dailyGoalProgress: 0, 
-          dailyGoalTotal: 50, 
+          dailyGoalTotal: dailyGoal, 
           reviewsToday: reviewCount, 
           petLevel: fetchedStats.pet_level || 1, 
           petExp: fetchedStats.pet_exp || 0, 
@@ -313,7 +339,7 @@ export default function App() {
           lastCheckin: fetchedStats.last_checkin_date 
         });
       } else {
-        setStats(prev => ({ ...prev, reviewsToday: reviewCount, totalStudied: Object.keys(fetchedProgress).length }));
+        setStats(prev => ({ ...prev, reviewsToday: reviewCount, totalStudied: Object.keys(fetchedProgress).length, dailyGoalTotal: dailyGoal }));
       }
 
       setIsInitializing(false); 
@@ -343,14 +369,16 @@ export default function App() {
     setStats(prev => ({ 
       ...prev, 
       reviewsToday: reviewCount,
-      totalStudied: Object.keys(userProgressMap).length
+      totalStudied: Object.keys(userProgressMap).length,
+      dailyGoalTotal: dailyGoal
     }));
 
     setAlphabetGroups(prevGroups => prevGroups.map(g => ({
       ...g,
+      total: dailyGoal, 
       learned: groupLearnedCount[g.id] || 0
     })));
-  }, [userProgressMap, allVocabulary, isInitializing]);
+  }, [userProgressMap, allVocabulary, isInitializing, dailyGoal]);
 
   const syncStatsToCloud = async (newStats, progressBatch = []) => {
     try {
@@ -440,6 +468,7 @@ export default function App() {
   const [sessionMastered, setSessionMastered] = useState(0); 
 
   const inputRef = useRef(null);
+  const voicesRef = useRef([]); 
 
   const REWARDS = [
     { id: 1, title: 'Na siêu chăm chỉ', condition: 'Đạt chuỗi 7 ngày học', rewardItem: 'Ly Trà sữa 🧋', target: 7, current: stats.streakDays, icon: Heart, color: 'text-pink-500 dark:text-white', bgColor: 'bg-pink-100 dark:bg-white/10' },
@@ -447,38 +476,55 @@ export default function App() {
     { id: 3, title: 'Cao thủ Hán tự', condition: 'Thuộc 100 từ mới', rewardItem: 'Xem phim rạp 🎬', target: 100, current: stats.totalMastered, icon: Star, color: 'text-rose-500 dark:text-white', bgColor: 'bg-rose-100 dark:bg-white/10' },
   ];
 
-  // --- HÀM PHÁT ÂM THANH ĐÃ BỎ HOÀN TOÀN SET_TIMEOUT ---
+  // ==========================================
+  // ĐẠI PHẪU TỐI THƯỢNG: ĐỒNG BỘ ÂM THANH CHỐNG CÂM ĐIẾC
+  // ==========================================
   const playAudio = (text) => {
     if (!window.speechSynthesis) return;
-    
-    // Hủy các luồng đang chờ
-    window.speechSynthesis.cancel(); 
-    
+
+    // CHỈ DỌN DẸP KHI CÓ TIẾNG ĐANG PHÁT - Nếu rỗng mà gọi cancel() sẽ làm đóng băng Chrome
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+      window.speechSynthesis.cancel(); 
+    }
+
+    // ĐỒNG BỘ 100%: Xóa vĩnh viễn setTimeout để không làm mất token User Gesture của iOS/Chrome
     try {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = 'zh-CN'; 
-      utterance.rate = 0.85; 
+      utterance.rate = audioSpeed; 
 
-      // Ép tìm giọng tiếng Trung chuẩn
-      const voices = window.speechSynthesis.getVoices();
-      const zhVoice = voices.find(voice => voice.lang === 'zh-CN' || voice.lang.includes('zh'));
+      // Ưu tiên load giọng từ cache
+      let zhVoice = voicesRef.current.find(voice => voice.lang === 'zh-CN' || voice.lang.includes('zh') || voice.lang.includes('Han'));
+      
+      // Fallback: Quét trực tiếp nếu cache rỗng
+      if (!zhVoice) {
+         const currentVoices = window.speechSynthesis.getVoices();
+         zhVoice = currentVoices.find(voice => voice.lang === 'zh-CN' || voice.lang.includes('zh') || voice.lang.includes('Han'));
+      }
+
       if (zhVoice) {
         utterance.voice = zhVoice;
       }
 
-      // THỰC THI NGAY LẬP TỨC! KHÔNG ĐƯỢC CHỜ ĐỢI DÙ CHỈ 1ms
+      // THỰC THI CHUẨN ĐỒNG BỘ TỨC THỜI
       window.speechSynthesis.speak(utterance);
-      
+
     } catch (err) {
       console.error("Lỗi SpeechSynthesis:", err);
     }
   };
 
+  // Pre-load giọng nói ngay từ đầu để không bị độ trễ
   useEffect(() => {
+    const loadVoices = () => {
+      if ('speechSynthesis' in window) {
+        voicesRef.current = window.speechSynthesis.getVoices();
+      }
+    };
+    
+    loadVoices();
     if ('speechSynthesis' in window) {
-      window.speechSynthesis.onvoiceschanged = () => {
-        window.speechSynthesis.getVoices();
-      };
+      window.speechSynthesis.onvoiceschanged = loadVoices;
     }
   }, []);
 
@@ -567,7 +613,7 @@ export default function App() {
     setSelectedQuizOption(null);
     setIsLoading(false);
 
-    // Phát âm ngay từ đầu tiên nếu là chế độ có âm thanh
+    // Kích hoạt cổng âm thanh đồng bộ: Phát thẳng từ đầu tiên để lách luật
     if (learningMode === 'standard' || learningMode === 'listening') {
        playAudio(sessionCards[0].word);
     }
@@ -580,8 +626,7 @@ export default function App() {
          { id: 999, word: "等", pronunciation: "děng", meaning: "Đợi", example_sentence: "请等一下。", example_translation: "Xin đợi một chút.", interval: 0, ease_factor: 2.5 }
        ]);
        setCurrentScreen('flashcard');
-       // Test âm thanh ngay trên dữ liệu ảo
-       if (learningMode === 'standard' || learningMode === 'listening') playAudio("请");
+       if (learningMode === 'standard' || learningMode === 'listening') playAudio("请"); // Test đồng bộ
        return;
     }
     if (stats.reviewsToday > 100) return; 
@@ -596,7 +641,7 @@ export default function App() {
   const handleEval = (gradeCode) => {
     const card = flashcards[currentCardIndex];
     
-    // GỌI PHÁT ÂM ĐỒNG BỘ TRƯỚC KHI REACT STATE LÀM MẤT QUYỀN
+    // GỌI PHÁT ÂM ĐỒNG BỘ TRỰC TIẾP TRONG EVENT NHẤP CHUỘT
     if (currentCardIndex < flashcards.length - 1 && learningMode === 'standard') {
        playAudio(flashcards[currentCardIndex + 1].word);
     }
@@ -668,7 +713,7 @@ export default function App() {
 
   const flipCard = () => {
     if (!isFlipped) {
-      playAudio(flashcards[currentCardIndex].word); // Đồng bộ
+      playAudio(flashcards[currentCardIndex].word); 
       setIsFlipped(true);
     }
   };
@@ -680,7 +725,7 @@ export default function App() {
   const handleTypingSubmit = () => {
     if (!typingInput) return;
     const card = flashcards[currentCardIndex];
-    playAudio(card.word); // GỌI PHÁT ÂM NGAY TRƯỚC TIÊN
+    playAudio(card.word); // ĐỒNG BỘ 
 
     const isExactMatch = typingInput.toLowerCase().replace(/\s/g, '') === card.pronunciation.toLowerCase().replace(/\s/g, '') || typingInput === card.word;
     const isTonelessMatch = normalizePinyin(typingInput) === normalizePinyin(card.pronunciation);
@@ -711,7 +756,7 @@ export default function App() {
   };
 
   const handleVisualSelect = (optId) => {
-    playAudio(flashcards[currentCardIndex].word); // GỌI ĐỒNG BỘ ĐẦU TIÊN
+    playAudio(flashcards[currentCardIndex].word); // ĐỒNG BỘ
     setSelectedQuizOption(optId);
     const isCorrect = optId === flashcards[currentCardIndex].id;
     setIsFlipped(true);
@@ -1013,34 +1058,77 @@ export default function App() {
           </div>
         )}
 
-        {/* MODAL CÀI ĐẶT */}
+        {/* MODAL CÀI ĐẶT ĐƯỢC MỞ RỘNG */}
         {isSettingsOpen && (
           <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="bg-white dark:bg-[#131A33] rounded-3xl p-5 sm:p-6 w-full max-w-xs sm:max-w-sm shadow-2xl border border-white/50 dark:border-white/10 relative transform transition-all">
+            <div className="bg-white dark:bg-[#131A33] rounded-3xl p-5 sm:p-6 w-full max-w-xs sm:max-w-sm shadow-2xl border border-white/50 dark:border-white/10 relative transform transition-all max-h-[90vh] overflow-y-auto hide-scrollbar">
               <button onClick={() => setIsSettingsOpen(false)} className="absolute top-3 sm:top-4 right-3 sm:right-4 text-slate-400 hover:text-slate-700 dark:hover:text-white transition-colors p-2">
                 <X className="w-5 h-5 sm:w-6 sm:h-6" />
               </button>
-              <h2 className="text-xl sm:text-2xl font-bold text-slate-800 dark:text-white mb-4 sm:mb-6 flex items-center gap-2">
+              <h2 className="text-xl sm:text-2xl font-bold text-slate-800 dark:text-white mb-4 sm:mb-6 flex items-center gap-2 sticky top-0 bg-white dark:bg-[#131A33] z-10 py-2">
                 <Settings className="w-5 h-5 sm:w-6 sm:h-6 text-pink-500" /> Cài đặt Học tập
               </h2>
               
-              <div className="mb-5 sm:mb-6">
-                <label className="block text-xs sm:text-sm font-bold text-slate-600 dark:text-white/80 mb-2 sm:mb-3">Thời gian lật thẻ (sau khi đúng)</label>
-                <div className="grid grid-cols-2 gap-2 sm:gap-3">
-                  {[1000, 1500, 2500, 4000].map(delay => (
-                    <button 
-                      key={delay}
-                      onClick={() => setAutoFlipDelay(delay)}
-                      className={`py-2.5 sm:py-3 rounded-lg sm:rounded-xl text-sm sm:text-base font-semibold border-2 transition-all ${autoFlipDelay === delay ? 'bg-pink-100 border-pink-500 text-pink-600 dark:bg-pink-500/20 dark:border-pink-400 dark:text-white' : 'bg-slate-50 border-slate-200 text-slate-500 dark:bg-white/5 dark:border-white/10 dark:text-white/50 hover:border-pink-300'}`}
-                    >
-                      {delay / 1000} giây
-                    </button>
-                  ))}
+              <div className="space-y-5 sm:space-y-6">
+                {/* 1. THỜI GIAN LẬT THẺ */}
+                <div>
+                  <label className="block text-xs sm:text-sm font-bold text-slate-600 dark:text-white/80 mb-2 sm:mb-3">Thời gian lật thẻ (sau khi đúng)</label>
+                  <div className="grid grid-cols-2 gap-2 sm:gap-3">
+                    {[1000, 1500, 2500, 4000].map(delay => (
+                      <button 
+                        key={delay}
+                        onClick={() => setAutoFlipDelay(delay)}
+                        className={`py-2.5 sm:py-3 rounded-lg sm:rounded-xl text-sm sm:text-base font-semibold border-2 transition-all ${autoFlipDelay === delay ? 'bg-pink-100 border-pink-500 text-pink-600 dark:bg-pink-500/20 dark:border-pink-400 dark:text-white' : 'bg-slate-50 border-slate-200 text-slate-500 dark:bg-white/5 dark:border-white/10 dark:text-white/50 hover:border-pink-300'}`}
+                      >
+                        {delay / 1000} giây
+                      </button>
+                    ))}
+                  </div>
                 </div>
-                <p className="text-[10px] sm:text-xs text-slate-400 dark:text-white/40 mt-2.5 sm:mt-3 text-center leading-relaxed">Giúp bạn có đủ thời gian đọc ví dụ trước khi qua từ mới.</p>
+
+                {/* 2. TỐC ĐỘ AUDIO */}
+                <div>
+                  <label className="block text-xs sm:text-sm font-bold text-slate-600 dark:text-white/80 mb-2 sm:mb-3">Tốc độ đọc phát âm (Audio)</label>
+                  <div className="grid grid-cols-3 gap-2 sm:gap-3">
+                    {[{label: 'Chậm', val: 0.6}, {label: 'Chuẩn', val: 0.85}, {label: 'Nhanh', val: 1.2}].map(spd => (
+                      <button 
+                        key={spd.val}
+                        onClick={() => {
+                          setAudioSpeed(spd.val);
+                          if(window.speechSynthesis){
+                            window.speechSynthesis.cancel();
+                            const u = new SpeechSynthesisUtterance('你好，我学汉语');
+                            u.lang='zh-CN'; u.rate=spd.val;
+                            window.speechSynthesis.speak(u);
+                          }
+                        }}
+                        className={`py-2.5 sm:py-3 rounded-lg sm:rounded-xl text-xs sm:text-sm font-semibold border-2 transition-all ${audioSpeed === spd.val ? 'bg-indigo-100 border-indigo-500 text-indigo-600 dark:bg-indigo-500/20 dark:border-indigo-400 dark:text-white' : 'bg-slate-50 border-slate-200 text-slate-500 dark:bg-white/5 dark:border-white/10 dark:text-white/50 hover:border-indigo-300'}`}
+                      >
+                        {spd.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 3. MỤC TIÊU HỌC TẬP */}
+                <div>
+                  <label className="block text-xs sm:text-sm font-bold text-slate-600 dark:text-white/80 mb-2 sm:mb-3">Mục tiêu học từ vựng (Nhóm)</label>
+                  <div className="grid grid-cols-4 gap-1.5 sm:gap-2">
+                    {[15, 30, 50, 100].map(goal => (
+                      <button 
+                        key={goal}
+                        onClick={() => setDailyGoal(goal)}
+                        className={`py-2 rounded-lg sm:rounded-xl text-xs sm:text-sm font-semibold border-2 transition-all ${dailyGoal === goal ? 'bg-emerald-100 border-emerald-500 text-emerald-600 dark:bg-emerald-500/20 dark:border-emerald-400 dark:text-white' : 'bg-slate-50 border-slate-200 text-slate-500 dark:bg-white/5 dark:border-white/10 dark:text-white/50 hover:border-emerald-300'}`}
+                      >
+                        {goal}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[9px] sm:text-[10px] text-slate-400 dark:text-white/40 mt-2 sm:mt-3 text-center leading-relaxed">Giao diện sẽ hiển thị tiến độ phân số dựa trên mục tiêu này.</p>
+                </div>
               </div>
 
-              <button onClick={() => setIsSettingsOpen(false)} className="w-full py-3 sm:py-4 bg-gradient-to-r from-pink-400 to-rose-400 text-white rounded-xl font-bold text-sm sm:text-base shadow-lg active:scale-95 transition-transform">
+              <button onClick={() => setIsSettingsOpen(false)} className="w-full mt-6 py-3 sm:py-4 bg-gradient-to-r from-pink-400 to-rose-400 text-white rounded-xl font-bold text-sm sm:text-base shadow-lg active:scale-95 transition-transform">
                 Lưu & Đóng
               </button>
             </div>
@@ -1175,7 +1263,7 @@ export default function App() {
                   </span>
                   <div className="mt-1.5 sm:mt-2 mb-3 sm:mb-4">
                     <h2 className={`text-3xl sm:text-4xl font-extrabold mb-0.5 sm:mb-1 drop-shadow-sm leading-none ${stats.reviewsToday > 100 ? 'text-slate-400 dark:text-white/30' : 'text-slate-800 dark:text-white'}`}>
-                      {isLoading ? '...' : flashcards.length} <span className="text-base sm:text-lg font-medium opacity-80">/ {stats.dailyGoalTotal}</span>
+                      {isLoading ? '...' : flashcards.length} <span className="text-base sm:text-lg font-medium opacity-80">/ {dailyGoal}</span>
                     </h2>
                     <p className={`text-xs sm:text-sm font-medium leading-snug ${stats.reviewsToday > 100 ? 'text-slate-400 dark:text-white/30' : 'text-pink-600 dark:text-white/70'}`}>
                       từ mới phiên tiếp theo
@@ -1262,8 +1350,8 @@ export default function App() {
             </div>
             <div className="space-y-2.5 sm:space-y-3">
               {alphabetGroups.map(group => {
-                const isCompleted = group.learned === group.total && group.total > 0;
-                const progressPercent = group.total > 0 ? (group.learned / group.total) * 100 : 0;
+                const isCompleted = group.learned >= group.total && group.total > 0;
+                const progressPercent = group.total > 0 ? Math.min((group.learned / group.total) * 100, 100) : 0;
                 return (
                   <div key={group.id} onClick={() => handleSelectGroup(group.id)} className={`bg-white/60 dark:bg-white/5 backdrop-blur-md p-3 sm:p-4 rounded-xl sm:rounded-2xl border transition-all cursor-pointer active:scale-[0.98] ${group.active ? 'border-pink-300 dark:border-white/30 shadow-md shadow-pink-200/50 dark:shadow-[0_0_15px_rgba(255,255,255,0.05)] ring-2 ring-pink-100 dark:ring-white/10 transform scale-[1.02]' : 'border-white/50 dark:border-transparent hover:border-pink-200 dark:hover:border-white/20 hover:bg-white/80'}`}>
                     <div className="flex items-center gap-3 sm:gap-4">
