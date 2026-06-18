@@ -170,6 +170,9 @@ export default function App() {
   const [isInitializing, setIsInitializing] = useState(true); 
   const [toastMessage, setToastMessage] = useState(null);
 
+  // === STATE MỚI: QUẢN LÝ MỞ KHÓA AUDIO IOS ===
+  const [isAudioUnlocked, setIsAudioUnlocked] = useState(false);
+
   const [userId] = useState(() => {
     let id = localStorage.getItem('na_hsk_device_id');
     if (!id) {
@@ -477,36 +480,46 @@ export default function App() {
   ];
 
   // ==========================================
-  // ĐẠI PHẪU TỐI THƯỢNG: ĐỒNG BỘ ÂM THANH CHỐNG CÂM ĐIẾC
+  // ĐẠI PHẪU TỐI THƯỢNG IOS: CHIẾM QUYỀN MÀN HÌNH ĐỂ MỞ KHÓA AUDIO
   // ==========================================
+  const forceUnlockAudio = () => {
+    if (!isAudioUnlocked && window.speechSynthesis) {
+      // Phát ra một âm lượng 0% khi người dùng vừa chạm ngón tay vào màn hình lần đầu
+      const unlockUtterance = new SpeechSynthesisUtterance('');
+      unlockUtterance.volume = 0;
+      window.speechSynthesis.speak(unlockUtterance);
+      setIsAudioUnlocked(true);
+      console.log("Audio Engine Unlocked for iOS!");
+    }
+  };
+
   const playAudio = (text) => {
     if (!window.speechSynthesis) return;
 
-    // CHỈ DỌN DẸP KHI CÓ TIẾNG ĐANG PHÁT - Nếu rỗng mà gọi cancel() sẽ làm đóng băng Chrome
-    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+    // Hủy an toàn nếu đang bận nói
+    if (window.speechSynthesis.speaking) {
       window.speechSynthesis.cancel(); 
     }
 
-    // ĐỒNG BỘ 100%: Xóa vĩnh viễn setTimeout để không làm mất token User Gesture của iOS/Chrome
     try {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = 'zh-CN'; 
       utterance.rate = audioSpeed; 
+      utterance.volume = 1;
 
       // Ưu tiên load giọng từ cache
-      let zhVoice = voicesRef.current.find(voice => voice.lang === 'zh-CN' || voice.lang.includes('zh') || voice.lang.includes('Han'));
+      let zhVoice = voicesRef.current.find(voice => voice.lang.includes('zh') || voice.lang.includes('Han'));
       
       // Fallback: Quét trực tiếp nếu cache rỗng
       if (!zhVoice) {
-         const currentVoices = window.speechSynthesis.getVoices();
-         zhVoice = currentVoices.find(voice => voice.lang === 'zh-CN' || voice.lang.includes('zh') || voice.lang.includes('Han'));
+         voicesRef.current = window.speechSynthesis.getVoices();
+         zhVoice = voicesRef.current.find(voice => voice.lang.includes('zh') || voice.lang.includes('Han'));
       }
 
       if (zhVoice) {
         utterance.voice = zhVoice;
       }
 
-      // THỰC THI CHUẨN ĐỒNG BỘ TỨC THỜI
       window.speechSynthesis.speak(utterance);
 
     } catch (err) {
@@ -514,7 +527,7 @@ export default function App() {
     }
   };
 
-  // Pre-load giọng nói ngay từ đầu để không bị độ trễ
+  // Pre-load giọng nói ngay từ đầu
   useEffect(() => {
     const loadVoices = () => {
       if ('speechSynthesis' in window) {
@@ -613,7 +626,6 @@ export default function App() {
     setSelectedQuizOption(null);
     setIsLoading(false);
 
-    // Kích hoạt cổng âm thanh đồng bộ: Phát thẳng từ đầu tiên để lách luật
     if (learningMode === 'standard' || learningMode === 'listening') {
        playAudio(sessionCards[0].word);
     }
@@ -626,7 +638,7 @@ export default function App() {
          { id: 999, word: "等", pronunciation: "děng", meaning: "Đợi", example_sentence: "请等一下。", example_translation: "Xin đợi một chút.", interval: 0, ease_factor: 2.5 }
        ]);
        setCurrentScreen('flashcard');
-       if (learningMode === 'standard' || learningMode === 'listening') playAudio("请"); // Test đồng bộ
+       if (learningMode === 'standard' || learningMode === 'listening') playAudio("请"); 
        return;
     }
     if (stats.reviewsToday > 100) return; 
@@ -641,7 +653,7 @@ export default function App() {
   const handleEval = (gradeCode) => {
     const card = flashcards[currentCardIndex];
     
-    // GỌI PHÁT ÂM ĐỒNG BỘ TRỰC TIẾP TRONG EVENT NHẤP CHUỘT
+    // GỌI PHÁT ÂM NGAY TRƯỚC KHI REACT ĐỔI STATE ĐỂ GIỮ QUYỀN
     if (currentCardIndex < flashcards.length - 1 && learningMode === 'standard') {
        playAudio(flashcards[currentCardIndex + 1].word);
     }
@@ -725,7 +737,7 @@ export default function App() {
   const handleTypingSubmit = () => {
     if (!typingInput) return;
     const card = flashcards[currentCardIndex];
-    playAudio(card.word); // ĐỒNG BỘ 
+    playAudio(card.word); 
 
     const isExactMatch = typingInput.toLowerCase().replace(/\s/g, '') === card.pronunciation.toLowerCase().replace(/\s/g, '') || typingInput === card.word;
     const isTonelessMatch = normalizePinyin(typingInput) === normalizePinyin(card.pronunciation);
@@ -756,7 +768,7 @@ export default function App() {
   };
 
   const handleVisualSelect = (optId) => {
-    playAudio(flashcards[currentCardIndex].word); // ĐỒNG BỘ
+    playAudio(flashcards[currentCardIndex].word); 
     setSelectedQuizOption(optId);
     const isCorrect = optId === flashcards[currentCardIndex].id;
     setIsFlipped(true);
@@ -1043,10 +1055,10 @@ export default function App() {
   }
 
   // ==========================================
-  // RENDER: DASHBOARD CHÍNH
+  // RENDER: DASHBOARD CHÍNH (Đã gắn sự kiện mở khóa audio ngầm)
   // ==========================================
   return (
-    <div className={`${isDarkMode ? 'dark' : ''}`}>
+    <div className={`${isDarkMode ? 'dark' : ''}`} onClick={forceUnlockAudio} onTouchStart={forceUnlockAudio}>
       <div className="min-h-screen bg-transparent font-sans text-slate-800 dark:text-slate-200 pb-16 sm:pb-24 transition-colors duration-500 relative">
         <StarryNightBackground />
         <MorningAuraBackground />
@@ -1061,7 +1073,7 @@ export default function App() {
         {/* MODAL CÀI ĐẶT ĐƯỢC MỞ RỘNG */}
         {isSettingsOpen && (
           <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="bg-white dark:bg-[#131A33] rounded-3xl p-5 sm:p-6 w-full max-w-xs sm:max-w-sm shadow-2xl border border-white/50 dark:border-white/10 relative transform transition-all max-h-[90vh] overflow-y-auto hide-scrollbar">
+            <div className="bg-white dark:bg-[#131A33] rounded-3xl p-5 sm:p-6 w-full max-w-xs sm:max-w-sm shadow-2xl border border-white/50 dark:border-white/10 relative transform transition-all max-h-[90vh] overflow-y-auto hide-scrollbar" onClick={e => e.stopPropagation()}>
               <button onClick={() => setIsSettingsOpen(false)} className="absolute top-3 sm:top-4 right-3 sm:right-4 text-slate-400 hover:text-slate-700 dark:hover:text-white transition-colors p-2">
                 <X className="w-5 h-5 sm:w-6 sm:h-6" />
               </button>
@@ -1145,14 +1157,14 @@ export default function App() {
           </div>
           <div className="flex items-center gap-1.5 sm:gap-3">
             <button 
-              onClick={() => setIsSettingsOpen(true)} 
+              onClick={(e) => { e.stopPropagation(); setIsSettingsOpen(true); }} 
               className="p-1.5 sm:p-2 rounded-full bg-white/60 dark:bg-white/10 text-slate-500 dark:text-slate-300 hover:bg-white/80 dark:hover:bg-white/20 transition-colors border border-white/50 dark:border-white/10 shadow-sm backdrop-blur-md"
             >
               <Settings className="w-4 h-4 sm:w-5 sm:h-5" />
             </button>
 
             <button 
-              onClick={() => setIsDarkMode(!isDarkMode)} 
+              onClick={(e) => { e.stopPropagation(); setIsDarkMode(!isDarkMode); }} 
               className="p-1.5 sm:p-2 rounded-full bg-white/60 dark:bg-white/10 text-pink-500 dark:text-yellow-300 hover:bg-white/80 dark:hover:bg-white/20 transition-colors border border-white/50 dark:border-white/10 shadow-sm backdrop-blur-md"
             >
               {isDarkMode ? <CloudMoon className="w-4 h-4 sm:w-5 sm:h-5" /> : <Sun className="w-4 h-4 sm:w-5 sm:h-5" />}
@@ -1202,7 +1214,7 @@ export default function App() {
               </div>
 
               <div className="flex-1 ml-3 sm:ml-4 md:ml-6 flex flex-col justify-center min-w-0">
-                <button onClick={handleFeedPet} disabled={stats.petFood === 0} className={`w-full py-2.5 sm:py-3 md:py-4 rounded-xl sm:rounded-2xl font-bold text-xs sm:text-sm md:text-base flex items-center justify-center gap-1.5 sm:gap-2 transition-all shadow-md border ${stats.petFood > 0 ? 'bg-gradient-to-r from-pink-400 to-rose-400 dark:from-white/20 dark:to-white/10 dark:backdrop-blur-md text-white hover:opacity-90 active:scale-95 border-white/50 dark:border-white/20 cursor-pointer' : 'bg-white/40 dark:bg-white/5 text-slate-400 dark:text-white/40 border-white/50 dark:border-white/5 cursor-not-allowed'}`}>
+                <button onClick={(e) => { e.stopPropagation(); handleFeedPet(); }} disabled={stats.petFood === 0} className={`w-full py-2.5 sm:py-3 md:py-4 rounded-xl sm:rounded-2xl font-bold text-xs sm:text-sm md:text-base flex items-center justify-center gap-1.5 sm:gap-2 transition-all shadow-md border ${stats.petFood > 0 ? 'bg-gradient-to-r from-pink-400 to-rose-400 dark:from-white/20 dark:to-white/10 dark:backdrop-blur-md text-white hover:opacity-90 active:scale-95 border-white/50 dark:border-white/20 cursor-pointer' : 'bg-white/40 dark:bg-white/5 text-slate-400 dark:text-white/40 border-white/50 dark:border-white/5 cursor-not-allowed'}`}>
                   <Cookie className={`w-4 h-4 sm:w-5 sm:h-5 ${stats.petFood > 0 ? 'fill-current' : ''}`} />
                   <span className="truncate">{stats.petFood > 0 ? 'Cho ăn ngay' : 'Hết Bánh Bao'}</span>
                 </button>
@@ -1237,7 +1249,7 @@ export default function App() {
                   </div>
                 </div>
                 <button 
-                  onClick={handleStartReview}
+                  onClick={(e) => { e.stopPropagation(); handleStartReview(); }}
                   disabled={stats.reviewsToday === 0}
                   className="w-full bg-white/90 dark:bg-white/10 dark:backdrop-blur-md text-rose-600 dark:text-white font-bold py-3 sm:py-4 rounded-xl flex items-center justify-center gap-1.5 sm:gap-2 hover:bg-white dark:hover:bg-white/20 transition-all active:scale-95 shadow-md disabled:opacity-50 border border-white/50 dark:border-white/20 dark:shadow-none mt-1 sm:mt-2 text-sm sm:text-base"
                 >
@@ -1277,7 +1289,7 @@ export default function App() {
                   </button>
                 ) : (
                   <button 
-                    onClick={handleStartLearning}
+                    onClick={(e) => { e.stopPropagation(); handleStartLearning(); }}
                     disabled={isLoading}
                     className="w-full bg-white/80 dark:bg-[#0B1021]/40 dark:backdrop-blur-md text-pink-600 dark:text-white font-bold py-3 sm:py-4 rounded-xl flex items-center justify-center gap-1.5 sm:gap-2 hover:bg-white dark:hover:bg-[#0B1021]/60 transition-all active:scale-95 shadow-md disabled:opacity-70 border border-white dark:border-white/10 dark:shadow-none mt-1 sm:mt-2 text-sm sm:text-base"
                   >
@@ -1294,19 +1306,19 @@ export default function App() {
               <Target className="w-4 h-4 sm:w-5 sm:h-5 text-pink-500 dark:text-white/80" /> Chế độ học
             </h3>
             <div className="grid grid-cols-4 gap-1.5 sm:gap-2 mb-3 sm:mb-4">
-              <button onClick={() => setLearningMode('standard')} className={`p-2 sm:p-3 rounded-xl sm:rounded-2xl border flex flex-col items-center justify-center gap-1 sm:gap-2 transition-all backdrop-blur-sm ${learningMode === 'standard' ? 'bg-white/80 dark:bg-white/20 border-pink-300 dark:border-white/30 text-pink-600 dark:text-white shadow-sm ring-1 ring-pink-300 dark:ring-white/30' : 'bg-white/40 dark:bg-black/20 border-white/50 dark:border-white/5 text-slate-500 dark:text-white/50 hover:bg-white/60 dark:hover:bg-white/10'}`}>
+              <button onClick={(e) => { e.stopPropagation(); setLearningMode('standard'); }} className={`p-2 sm:p-3 rounded-xl sm:rounded-2xl border flex flex-col items-center justify-center gap-1 sm:gap-2 transition-all backdrop-blur-sm ${learningMode === 'standard' ? 'bg-white/80 dark:bg-white/20 border-pink-300 dark:border-white/30 text-pink-600 dark:text-white shadow-sm ring-1 ring-pink-300 dark:ring-white/30' : 'bg-white/40 dark:bg-black/20 border-white/50 dark:border-white/5 text-slate-500 dark:text-white/50 hover:bg-white/60 dark:hover:bg-white/10'}`}>
                 <BookOpen className="w-5 h-5 sm:w-6 sm:h-6" />
                 <span className="text-[9px] sm:text-[10px] md:text-xs font-bold text-center">Tiêu chuẩn</span>
               </button>
-              <button onClick={() => setLearningMode('listening')} className={`p-2 sm:p-3 rounded-xl sm:rounded-2xl border flex flex-col items-center justify-center gap-1 sm:gap-2 transition-all backdrop-blur-sm ${learningMode === 'listening' ? 'bg-white/80 dark:bg-white/20 border-pink-300 dark:border-white/30 text-pink-600 dark:text-white shadow-sm ring-1 ring-pink-300 dark:ring-white/30' : 'bg-white/40 dark:bg-black/20 border-white/50 dark:border-white/5 text-slate-500 dark:text-white/50 hover:bg-white/60 dark:hover:bg-white/10'}`}>
+              <button onClick={(e) => { e.stopPropagation(); setLearningMode('listening'); }} className={`p-2 sm:p-3 rounded-xl sm:rounded-2xl border flex flex-col items-center justify-center gap-1 sm:gap-2 transition-all backdrop-blur-sm ${learningMode === 'listening' ? 'bg-white/80 dark:bg-white/20 border-pink-300 dark:border-white/30 text-pink-600 dark:text-white shadow-sm ring-1 ring-pink-300 dark:ring-white/30' : 'bg-white/40 dark:bg-black/20 border-white/50 dark:border-white/5 text-slate-500 dark:text-white/50 hover:bg-white/60 dark:hover:bg-white/10'}`}>
                 <Headphones className="w-5 h-5 sm:w-6 sm:h-6" />
                 <span className="text-[9px] sm:text-[10px] md:text-xs font-bold text-center">Nghe</span>
               </button>
-              <button onClick={() => setLearningMode('typing')} className={`p-2 sm:p-3 rounded-xl sm:rounded-2xl border flex flex-col items-center justify-center gap-1 sm:gap-2 transition-all backdrop-blur-sm ${learningMode === 'typing' ? 'bg-white/80 dark:bg-white/20 border-pink-300 dark:border-white/30 text-pink-600 dark:text-white shadow-sm ring-1 ring-pink-300 dark:ring-white/30' : 'bg-white/40 dark:bg-black/20 border-white/50 dark:border-white/5 text-slate-500 dark:text-white/50 hover:bg-white/60 dark:hover:bg-white/10'}`}>
+              <button onClick={(e) => { e.stopPropagation(); setLearningMode('typing'); }} className={`p-2 sm:p-3 rounded-xl sm:rounded-2xl border flex flex-col items-center justify-center gap-1 sm:gap-2 transition-all backdrop-blur-sm ${learningMode === 'typing' ? 'bg-white/80 dark:bg-white/20 border-pink-300 dark:border-white/30 text-pink-600 dark:text-white shadow-sm ring-1 ring-pink-300 dark:ring-white/30' : 'bg-white/40 dark:bg-black/20 border-white/50 dark:border-white/5 text-slate-500 dark:text-white/50 hover:bg-white/60 dark:hover:bg-white/10'}`}>
                 <Keyboard className="w-5 h-5 sm:w-6 sm:h-6" />
                 <span className="text-[9px] sm:text-[10px] md:text-xs font-bold text-center">Gõ</span>
               </button>
-              <button onClick={() => setLearningMode('visual')} className={`p-2 sm:p-3 rounded-xl sm:rounded-2xl border flex flex-col items-center justify-center gap-1 sm:gap-2 transition-all backdrop-blur-sm ${learningMode === 'visual' ? 'bg-white/80 dark:bg-white/20 border-pink-300 dark:border-white/30 text-pink-600 dark:text-white shadow-sm ring-1 ring-pink-300 dark:ring-white/30' : 'bg-white/40 dark:bg-black/20 border-white/50 dark:border-white/5 text-slate-500 dark:text-white/50 hover:bg-white/60 dark:hover:bg-white/10'}`}>
+              <button onClick={(e) => { e.stopPropagation(); setLearningMode('visual'); }} className={`p-2 sm:p-3 rounded-xl sm:rounded-2xl border flex flex-col items-center justify-center gap-1 sm:gap-2 transition-all backdrop-blur-sm ${learningMode === 'visual' ? 'bg-white/80 dark:bg-white/20 border-pink-300 dark:border-white/30 text-pink-600 dark:text-white shadow-sm ring-1 ring-pink-300 dark:ring-white/30' : 'bg-white/40 dark:bg-black/20 border-white/50 dark:border-white/5 text-slate-500 dark:text-white/50 hover:bg-white/60 dark:hover:bg-white/10'}`}>
                 <ScanSearch className="w-5 h-5 sm:w-6 sm:h-6" />
                 <span className="text-[9px] sm:text-[10px] md:text-xs font-bold text-center">Mắt</span>
               </button>
@@ -1321,7 +1333,7 @@ export default function App() {
                   <p className="text-[9px] sm:text-[10px] text-slate-500 dark:text-white/50">Giúp quen mặt Hán tự</p>
                 </div>
               </div>
-              <button onClick={() => setHidePinyin(!hidePinyin)} className={`w-10 sm:w-12 h-5 sm:h-6 rounded-full transition-colors relative flex items-center shadow-inner ${hidePinyin ? 'bg-pink-400 dark:bg-white/40' : 'bg-white/60 dark:bg-black/50'}`}>
+              <button onClick={(e) => { e.stopPropagation(); setHidePinyin(!hidePinyin); }} className={`w-10 sm:w-12 h-5 sm:h-6 rounded-full transition-colors relative flex items-center shadow-inner ${hidePinyin ? 'bg-pink-400 dark:bg-white/40' : 'bg-white/60 dark:bg-black/50'}`}>
                 <div className={`w-3.5 sm:w-4 h-3.5 sm:h-4 bg-white rounded-full shadow-sm transition-transform absolute ${hidePinyin ? 'translate-x-6 sm:translate-x-7' : 'translate-x-0.5 sm:translate-x-1'}`}></div>
               </button>
             </div>
@@ -1353,7 +1365,7 @@ export default function App() {
                 const isCompleted = group.learned >= group.total && group.total > 0;
                 const progressPercent = group.total > 0 ? Math.min((group.learned / group.total) * 100, 100) : 0;
                 return (
-                  <div key={group.id} onClick={() => handleSelectGroup(group.id)} className={`bg-white/60 dark:bg-white/5 backdrop-blur-md p-3 sm:p-4 rounded-xl sm:rounded-2xl border transition-all cursor-pointer active:scale-[0.98] ${group.active ? 'border-pink-300 dark:border-white/30 shadow-md shadow-pink-200/50 dark:shadow-[0_0_15px_rgba(255,255,255,0.05)] ring-2 ring-pink-100 dark:ring-white/10 transform scale-[1.02]' : 'border-white/50 dark:border-transparent hover:border-pink-200 dark:hover:border-white/20 hover:bg-white/80'}`}>
+                  <div key={group.id} onClick={(e) => { e.stopPropagation(); handleSelectGroup(group.id); }} className={`bg-white/60 dark:bg-white/5 backdrop-blur-md p-3 sm:p-4 rounded-xl sm:rounded-2xl border transition-all cursor-pointer active:scale-[0.98] ${group.active ? 'border-pink-300 dark:border-white/30 shadow-md shadow-pink-200/50 dark:shadow-[0_0_15px_rgba(255,255,255,0.05)] ring-2 ring-pink-100 dark:ring-white/10 transform scale-[1.02]' : 'border-white/50 dark:border-transparent hover:border-pink-200 dark:hover:border-white/20 hover:bg-white/80'}`}>
                     <div className="flex items-center gap-3 sm:gap-4">
                       <div className={`p-2 sm:p-3 rounded-lg sm:rounded-xl shrink-0 transition-colors border border-white/50 dark:border-none ${isCompleted ? 'bg-pink-100 dark:bg-green-500/20 text-pink-600 dark:text-green-400' : 'bg-white/60 dark:bg-white/10 text-pink-400 dark:text-white/70'}`}>
                         {isCompleted ? <CheckCircle2 className="w-4 h-4 sm:w-5 sm:h-5" /> : <WholeWord className="w-4 h-4 sm:w-5 sm:h-5" />}
