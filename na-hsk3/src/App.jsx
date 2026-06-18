@@ -170,7 +170,7 @@ export default function App() {
   const [isInitializing, setIsInitializing] = useState(true); 
   const [toastMessage, setToastMessage] = useState(null);
 
-  // === STATE MỚI: QUẢN LÝ MỞ KHÓA AUDIO IOS ===
+  // === STATE QUẢN LÝ MỞ KHÓA AUDIO IOS ===
   const [isAudioUnlocked, setIsAudioUnlocked] = useState(false);
 
   const [userId] = useState(() => {
@@ -289,7 +289,6 @@ export default function App() {
       } catch (e) { console.error("Lỗi tải Thống kê:", e); }
 
       if (fetchedGroups.length === 0) {
-        console.warn("Kích hoạt Dữ liệu dự phòng do Database trống hoặc bị chặn RLS.");
         fetchedGroups = [
           { id: 1, name: 'Nhóm A - F', total: 50, learned: 0, active: true },
           { id: 2, name: 'Nhóm G - M', total: 50, learned: 0, active: false },
@@ -480,13 +479,12 @@ export default function App() {
   ];
 
   // ==========================================
-  // ĐẠI PHẪU TỐI THƯỢNG IOS: CHIẾM QUYỀN MÀN HÌNH ĐỂ MỞ KHÓA AUDIO
+  // ĐẠI PHẪU TỐI THƯỢNG IOS: CANCEL -> TIMEOUT 100ms -> RESUME -> SPEAK
   // ==========================================
   const forceUnlockAudio = () => {
     if (!isAudioUnlocked && window.speechSynthesis) {
-      // Phát ra một âm lượng 0% khi người dùng vừa chạm ngón tay vào màn hình lần đầu
-      const unlockUtterance = new SpeechSynthesisUtterance('');
-      unlockUtterance.volume = 0;
+      const unlockUtterance = new SpeechSynthesisUtterance('a'); // Bắt buộc phải có âm tiết
+      unlockUtterance.volume = 0.01; // Âm lượng cực nhỏ
       window.speechSynthesis.speak(unlockUtterance);
       setIsAudioUnlocked(true);
       console.log("Audio Engine Unlocked for iOS!");
@@ -496,38 +494,40 @@ export default function App() {
   const playAudio = (text) => {
     if (!window.speechSynthesis) return;
 
-    // Hủy an toàn nếu đang bận nói
-    if (window.speechSynthesis.speaking) {
-      window.speechSynthesis.cancel(); 
-    }
+    // 1. Hủy ngay lập tức bất kỳ âm thanh nào đang phát hoặc kẹt trong hàng đợi
+    window.speechSynthesis.cancel(); 
 
-    try {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'zh-CN'; 
-      utterance.rate = audioSpeed; 
-      utterance.volume = 1;
+    // 2. IOS MAGIC HACK: Phải chờ WebKit dọn dẹp hàng đợi xong mới được phép nói tiếp
+    // 100ms là khoảng thời gian "vàng" đủ để iOS không bị đơ queue mà vẫn tính là User Gesture
+    setTimeout(() => {
+      try {
+        // Đánh thức iOS Safari Web Speech API
+        window.speechSynthesis.resume();
 
-      // Ưu tiên load giọng từ cache
-      let zhVoice = voicesRef.current.find(voice => voice.lang.includes('zh') || voice.lang.includes('Han'));
-      
-      // Fallback: Quét trực tiếp nếu cache rỗng
-      if (!zhVoice) {
-         voicesRef.current = window.speechSynthesis.getVoices();
-         zhVoice = voicesRef.current.find(voice => voice.lang.includes('zh') || voice.lang.includes('Han'));
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'zh-CN'; 
+        utterance.rate = audioSpeed; 
+
+        // Lấy voice chuẩn xác từ bộ đệm hoặc quét trực tiếp
+        const currentVoices = window.speechSynthesis.getVoices();
+        const availableVoices = currentVoices.length > 0 ? currentVoices : voicesRef.current;
+        
+        const zhVoice = availableVoices.find(v => v.lang === 'zh-CN') ||
+                        availableVoices.find(v => v.lang.startsWith('zh')) ||
+                        availableVoices.find(v => v.lang.includes('Han'));
+
+        if (zhVoice) {
+          utterance.voice = zhVoice;
+        }
+
+        window.speechSynthesis.speak(utterance);
+      } catch (err) {
+        console.error("Lỗi SpeechSynthesis:", err);
       }
-
-      if (zhVoice) {
-        utterance.voice = zhVoice;
-      }
-
-      window.speechSynthesis.speak(utterance);
-
-    } catch (err) {
-      console.error("Lỗi SpeechSynthesis:", err);
-    }
+    }, 100); 
   };
 
-  // Pre-load giọng nói ngay từ đầu
+  // Nạp danh sách giọng đọc từ hệ điều hành ngay khi mở Web
   useEffect(() => {
     const loadVoices = () => {
       if ('speechSynthesis' in window) {
@@ -626,6 +626,9 @@ export default function App() {
     setSelectedQuizOption(null);
     setIsLoading(false);
 
+    // Kích hoạt cổng âm thanh ngay lập tức
+    forceUnlockAudio();
+
     if (learningMode === 'standard' || learningMode === 'listening') {
        playAudio(sessionCards[0].word);
     }
@@ -638,6 +641,7 @@ export default function App() {
          { id: 999, word: "等", pronunciation: "děng", meaning: "Đợi", example_sentence: "请等一下。", example_translation: "Xin đợi một chút.", interval: 0, ease_factor: 2.5 }
        ]);
        setCurrentScreen('flashcard');
+       forceUnlockAudio();
        if (learningMode === 'standard' || learningMode === 'listening') playAudio("请"); 
        return;
     }
@@ -653,7 +657,7 @@ export default function App() {
   const handleEval = (gradeCode) => {
     const card = flashcards[currentCardIndex];
     
-    // GỌI PHÁT ÂM NGAY TRƯỚC KHI REACT ĐỔI STATE ĐỂ GIỮ QUYỀN
+    // Đọc thẻ tiếp theo
     if (currentCardIndex < flashcards.length - 1 && learningMode === 'standard') {
        playAudio(flashcards[currentCardIndex + 1].word);
     }
@@ -1109,9 +1113,12 @@ export default function App() {
                           setAudioSpeed(spd.val);
                           if(window.speechSynthesis){
                             window.speechSynthesis.cancel();
-                            const u = new SpeechSynthesisUtterance('你好，我学汉语');
-                            u.lang='zh-CN'; u.rate=spd.val;
-                            window.speechSynthesis.speak(u);
+                            setTimeout(() => {
+                                window.speechSynthesis.resume();
+                                const u = new SpeechSynthesisUtterance('你好，我学汉语');
+                                u.lang='zh-CN'; u.rate=spd.val;
+                                window.speechSynthesis.speak(u);
+                            }, 100);
                           }
                         }}
                         className={`py-2.5 sm:py-3 rounded-lg sm:rounded-xl text-xs sm:text-sm font-semibold border-2 transition-all ${audioSpeed === spd.val ? 'bg-indigo-100 border-indigo-500 text-indigo-600 dark:bg-indigo-500/20 dark:border-indigo-400 dark:text-white' : 'bg-slate-50 border-slate-200 text-slate-500 dark:bg-white/5 dark:border-white/10 dark:text-white/50 hover:border-indigo-300'}`}
@@ -1214,7 +1221,7 @@ export default function App() {
               </div>
 
               <div className="flex-1 ml-3 sm:ml-4 md:ml-6 flex flex-col justify-center min-w-0">
-                <button onClick={(e) => { e.stopPropagation(); handleFeedPet(); }} disabled={stats.petFood === 0} className={`w-full py-2.5 sm:py-3 md:py-4 rounded-xl sm:rounded-2xl font-bold text-xs sm:text-sm md:text-base flex items-center justify-center gap-1.5 sm:gap-2 transition-all shadow-md border ${stats.petFood > 0 ? 'bg-gradient-to-r from-pink-400 to-rose-400 dark:from-white/20 dark:to-white/10 dark:backdrop-blur-md text-white hover:opacity-90 active:scale-95 border-white/50 dark:border-white/20 cursor-pointer' : 'bg-white/40 dark:bg-white/5 text-slate-400 dark:text-white/40 border-white/50 dark:border-white/5 cursor-not-allowed'}`}>
+                <button onClick={handleFeedPet} disabled={stats.petFood === 0} className={`w-full py-2.5 sm:py-3 md:py-4 rounded-xl sm:rounded-2xl font-bold text-xs sm:text-sm md:text-base flex items-center justify-center gap-1.5 sm:gap-2 transition-all shadow-md border ${stats.petFood > 0 ? 'bg-gradient-to-r from-pink-400 to-rose-400 dark:from-white/20 dark:to-white/10 dark:backdrop-blur-md text-white hover:opacity-90 active:scale-95 border-white/50 dark:border-white/20 cursor-pointer' : 'bg-white/40 dark:bg-white/5 text-slate-400 dark:text-white/40 border-white/50 dark:border-white/5 cursor-not-allowed'}`}>
                   <Cookie className={`w-4 h-4 sm:w-5 sm:h-5 ${stats.petFood > 0 ? 'fill-current' : ''}`} />
                   <span className="truncate">{stats.petFood > 0 ? 'Cho ăn ngay' : 'Hết Bánh Bao'}</span>
                 </button>
@@ -1333,7 +1340,7 @@ export default function App() {
                   <p className="text-[9px] sm:text-[10px] text-slate-500 dark:text-white/50">Giúp quen mặt Hán tự</p>
                 </div>
               </div>
-              <button onClick={(e) => { e.stopPropagation(); setHidePinyin(!hidePinyin); }} className={`w-10 sm:w-12 h-5 sm:h-6 rounded-full transition-colors relative flex items-center shadow-inner ${hidePinyin ? 'bg-pink-400 dark:bg-white/40' : 'bg-white/60 dark:bg-black/50'}`}>
+              <button onClick={() => setHidePinyin(!hidePinyin)} className={`w-10 sm:w-12 h-5 sm:h-6 rounded-full transition-colors relative flex items-center shadow-inner ${hidePinyin ? 'bg-pink-400 dark:bg-white/40' : 'bg-white/60 dark:bg-black/50'}`}>
                 <div className={`w-3.5 sm:w-4 h-3.5 sm:h-4 bg-white rounded-full shadow-sm transition-transform absolute ${hidePinyin ? 'translate-x-6 sm:translate-x-7' : 'translate-x-0.5 sm:translate-x-1'}`}></div>
               </button>
             </div>
